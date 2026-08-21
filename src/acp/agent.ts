@@ -21,7 +21,13 @@ import {
   type SetSessionModeResponse,
   type StopReason,
   type DeleteSessionRequest,
-  type DeleteSessionResponse
+  type DeleteSessionResponse,
+  type ResumeSessionRequest,
+  type ResumeSessionResponse,
+  type CloseSessionRequest,
+  type CloseSessionResponse,
+  type LogoutRequest,
+  type LogoutResponse
 } from '@agentclientprotocol/sdk'
 import { getAuthMethods } from './auth.js'
 import { SessionManager, type PiAcpSession } from './session.js'
@@ -45,6 +51,7 @@ import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slas
 import { getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
+import { writeMcpConfig, buildMcpNotice } from './mcp-config.js'
 import { isAbsolute } from 'node:path'
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import type { AvailableCommand } from '@agentclientprotocol/sdk'
@@ -197,6 +204,11 @@ export class PiAcpAgent implements ACPAgent {
 
       const cwd = opts?.cwd ?? stored.cwd
 
+      // Write the pi-mcp-adapter config before spawn when the client supplied MCP servers
+      // (session/load, session/resume). Plain restores (e.g. lazy restore on prompt) carry no
+      // servers and leave any existing config untouched.
+      const mcpWrite = writeMcpConfig(cwd, opts?.mcpServers)
+
       let proc: PiRpcProcess
       try {
         proc = await PiRpcProcess.spawn({
@@ -219,7 +231,8 @@ export class PiAcpAgent implements ACPAgent {
         conn: this.conn,
         proc,
         fileCommands,
-        additionalDirectories: opts?.additionalDirectories
+        additionalDirectories: opts?.additionalDirectories,
+        mcpConfigCleanup: mcpWrite.handle?.cleanup
       })
 
       this.lastSessionCwd = cwd
@@ -256,7 +269,9 @@ export class PiAcpAgent implements ACPAgent {
       }),
       agentCapabilities: {
         loadSession: true,
-        mcpCapabilities: { http: false, sse: false },
+        // stdio is the baseline (no flag); http servers are translated into pi-mcp-adapter
+        // config. sse/acp cannot be expressed in that config shape.
+        mcpCapabilities: { http: true, sse: false },
         promptCapabilities: {
           image: true,
           audio: false,
@@ -267,7 +282,9 @@ export class PiAcpAgent implements ACPAgent {
           // Enables a native session picker in clients that support it.
           list: {},
           delete: {},
-          additionalDirectories: {}
+          additionalDirectories: {},
+          resume: {},
+          close: {}
         }
       }
     }
@@ -285,10 +302,15 @@ export class PiAcpAgent implements ACPAgent {
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
 
-    // Pi doesn't support mcpServers, but we accept and store.
+    // Translate ACP mcpServers into a pi-mcp-adapter config (`<cwd>/.pi/mcp.json`) that pi
+    // picks up on spawn. Written before create() so the file exists before pi starts.
+    const mcpWrite = writeMcpConfig(params.cwd, params.mcpServers)
+    const mcpNotice = buildMcpNotice(params.cwd, mcpWrite)
+
     const session = await this.sessions.create({
       cwd: params.cwd,
       mcpServers: params.mcpServers,
+      mcpConfigCleanup: mcpWrite.handle?.cleanup,
       conn: this.conn,
       fileCommands,
       piCommand: process.env.PI_ACP_PI_COMMAND,
@@ -363,7 +385,7 @@ export class PiAcpAgent implements ACPAgent {
 
     // If quietStartup is enabled, suppress the full "startup info" prelude, but still surface
     // the "New version available" notice (if any) since it's high-signal and actionable.
-    const preludeText = quietStartup
+    const basePrelude = quietStartup
       ? updateNotice
         ? updateNotice + '\n'
         : ''
@@ -373,6 +395,10 @@ export class PiAcpAgent implements ACPAgent {
           updateNotice,
           additionalDirectories
         })
+
+    // Always surface the MCP notice (skipped servers / adapter missing), even under quietStartup —
+    // it's actionable and only appears when the client actually supplied MCP servers.
+    const preludeText = mcpNotice ? `${basePrelude}${basePrelude ? '\n' : ''}${mcpNotice}\n` : basePrelude
 
     if (preludeText)
       session.setStartupInfo(preludeText)
@@ -1141,6 +1167,87 @@ export class PiAcpAgent implements ACPAgent {
 
     this.store.delete(params.sessionId)
 
+    return {}
+  }
+
+  /**
+   * ACP `session/resume`: reattach to an existing session WITHOUT replaying history
+   * (unlike `session/load`, which streams the full transcript back). Re-advertises
+   * commands and returns current mode/config state.
+   */
+  async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+    if (!isAbsolute(params.cwd)) {
+      throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
+    }
+
+    const additionalDirectories = normalizeAdditionalDirectories(params.additionalDirectories, params.cwd)
+    const enableSkillCommands = getEnableSkillCommands(params.cwd)
+
+    // Fresh subprocess so command advertisement is reliable (mirrors loadSession).
+    this.sessions.close(params.sessionId)
+    this.lastSessionCwd = params.cwd
+
+    const session = await this.restoreSession(params.sessionId, {
+      cwd: params.cwd,
+      mcpServers: params.mcpServers,
+      additionalDirectories
+    })
+    const proc = session.proc
+    const fileCommands = loadSlashCommands(params.cwd)
+
+    ;(this.sessions as any).closeAllExcept?.(session.sessionId)
+
+    const { configOptions, modes } = await getSessionConfiguration(proc)
+
+    // Advertise slash commands after the response so the client knows the session exists.
+    setTimeout(() => {
+      void (async () => {
+        try {
+          const pi = (await proc.getCommands()) as any
+          const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
+            enableSkillCommands,
+            includeExtensionCommands: false
+          })
+
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'available_commands_update',
+              availableCommands: mergeCommands(commands, builtinAvailableCommands())
+            }
+          })
+          return
+        } catch {
+          // fall back
+        }
+
+        await this.conn.sessionUpdate({
+          sessionId: session.sessionId,
+          update: {
+            sessionUpdate: 'available_commands_update',
+            availableCommands: mergeCommands(toAvailableCommands(fileCommands), builtinAvailableCommands())
+          }
+        })
+      })()
+    }, 0)
+
+    return { configOptions, modes, _meta: { piAcp: { startupInfo: null } } }
+  }
+
+  /**
+   * ACP `session/close`: cancel any ongoing work and free the session's pi subprocess.
+   * Idempotent — closing an unknown/already-closed session succeeds.
+   */
+  async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+    this.sessions.close(params.sessionId)
+    return {}
+  }
+
+  /**
+   * ACP `auth/logout`. Terminal Auth is handled out-of-band by pi; there is no cached
+   * ACP-side auth state to clear, so this succeeds as a no-op.
+   */
+  async logout(_params: LogoutRequest): Promise<LogoutResponse> {
     return {}
   }
 

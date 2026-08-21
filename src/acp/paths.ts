@@ -9,9 +9,7 @@ import { join, resolve } from 'node:path'
  * via PI_CODING_AGENT_DIR.
  */
 export function getPiAcpDir(): string {
-  return process.env.PI_ACP_DATA_DIR
-    ? resolve(process.env.PI_ACP_DATA_DIR)
-    : join(homedir(), '.pi', 'pi-acp')
+  return process.env.PI_ACP_DATA_DIR ? resolve(process.env.PI_ACP_DATA_DIR) : join(homedir(), '.pi', 'pi-acp')
 }
 
 export function getPiAcpSessionMapPath(): string {

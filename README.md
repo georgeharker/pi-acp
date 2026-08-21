@@ -199,7 +199,17 @@ Project layout:
 ## Limitations
 
 - No ACP filesystem delegation (`fs/*`) and no ACP terminal delegation (`terminal/*`). pi reads/writes and executes locally.
-- MCP servers are accepted in ACP params and stored in session state, but not wired through to pi in this adapter. If you use [pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter) it will be available in the ACP client.
+- No ACP permission gating (`session/request_permission`): pi executes tools locally and does not surface pre-execution tool intents over RPC, so the adapter cannot gate them yet.
+
+## MCP servers
+
+MCP servers passed by the ACP client (`session/new`, `session/load`, `session/resume`) are translated
+into a generated `<cwd>/.pi/mcp.json` that [pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter)
+reads on spawn. stdio and http servers are supported; sse/acp servers cannot be expressed and are
+skipped with a notice. A hand-authored `.pi/mcp.json` is never overwritten, and generated files are
+removed when the session closes. Install `pi-mcp-adapter` in your pi `packages` for the servers to
+actually load — the adapter emits a startup notice when it is missing.
+
 - Additional workspace roots are not a hard filesystem boundary: pi can operate outside them. They are communicated to the model (workspace awareness), not enforced as a sandbox.
 - Assistant streaming is currently sent as `agent_message_chunk` (no separate thought stream).
 - Queue is implemented client-side and should work like pi's `one-at-a-time`

@@ -36,6 +36,8 @@ type SessionCreateParams = {
   piCommand?: string
   /** ACP additionalDirectories: extra workspace roots beyond cwd (absolute paths). */
   additionalDirectories?: string[]
+  /** Cleanup for a generated `.pi/mcp.json`, invoked when the session is closed. */
+  mcpConfigCleanup?: () => void
 }
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
@@ -175,6 +177,11 @@ export class SessionManager {
     } catch {
       // ignore
     }
+    try {
+      s.mcpConfigCleanup?.()
+    } catch {
+      // ignore
+    }
     this.sessions.delete(sessionId)
   }
 
@@ -224,7 +231,8 @@ export class SessionManager {
       proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
-      additionalDirectories: params.additionalDirectories ?? []
+      additionalDirectories: params.additionalDirectories ?? [],
+      mcpConfigCleanup: params.mcpConfigCleanup
     })
 
     this.sessions.set(sessionId, session)
@@ -252,7 +260,8 @@ export class SessionManager {
       proc: params.proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
-      additionalDirectories: params.additionalDirectories ?? []
+      additionalDirectories: params.additionalDirectories ?? [],
+      mcpConfigCleanup: params.mcpConfigCleanup
     })
 
     this.sessions.set(sessionId, session)
@@ -265,6 +274,7 @@ export class PiAcpSession {
   readonly cwd: string
   readonly mcpServers: McpServer[]
   readonly additionalDirectories: string[]
+  readonly mcpConfigCleanup?: () => void
 
   private startupInfo: string | null = null
   private startupInfoSent = false
@@ -310,11 +320,13 @@ export class PiAcpSession {
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
     additionalDirectories?: string[]
+    mcpConfigCleanup?: () => void
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
     this.mcpServers = opts.mcpServers
     this.additionalDirectories = opts.additionalDirectories ?? []
+    this.mcpConfigCleanup = opts.mcpConfigCleanup
     this.proc = opts.proc
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
