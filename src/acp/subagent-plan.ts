@@ -15,16 +15,31 @@ import type { PlanEntry } from '@agentclientprotocol/sdk'
  */
 export const SUBAGENT_PLAN_CUSTOM_TYPE = 'acp:subagents'
 
+/**
+ * pi-subagents' own custom entry, appended on (background) completion. Unlike our bridge's live
+ * lifecycle records, it carries the final `result`/`error` + timing — so we fold it into the fleet
+ * to enrich completed tasks. It already crosses RPC as `entry_appended` (no bridge needed).
+ */
+export const SUBAGENT_RECORD_CUSTOM_TYPE = 'subagents:record'
+
 /** Whether subagent→plan mapping is enabled (opt-in while experimental). */
 export const SUBAGENT_PLAN_ENABLED = process.env.PI_ACP_SUBAGENT_PLAN === 'true'
 
-/** A single subagent as reported by the bridge extension (from the `subagents:*` bus). */
+/** Max characters of `result`/`error` carried in a plan entry's `_meta` (a preview, not the full text). */
+const RESULT_PREVIEW_MAX = 2000
+
+/** A single subagent, merged from the live bridge records and pi-subagents' final `subagents:record`. */
 export type BridgeSubagent = {
   id: string
   type?: string
   description?: string
-  /** Raw pi-subagents lifecycle: created | started | completed | failed | steered | compacted */
+  /** Raw pi-subagents lifecycle: created | started | completed | failed | steered | compacted | error | aborted | stopped */
   status?: string
+  /** Final output (from `subagents:record`). */
+  result?: string
+  /** Failure detail (from `subagents:record`). */
+  error?: string
+  durationMs?: number
 }
 
 export type SubagentEntry = { clear: true } | { agent: BridgeSubagent }
@@ -51,8 +66,46 @@ export function parseSubagentEntry(data: unknown): SubagentEntry | null {
   }
 }
 
+/**
+ * Parse pi-subagents' `subagents:record` payload
+ * (`{id,type,description,status,result,error,startedAt,completedAt}`) into a fleet record carrying
+ * the final status + result/error + duration. Returns null when there's no usable id.
+ */
+export function parseSubagentRecord(data: unknown): BridgeSubagent | null {
+  if (data == null || typeof data !== 'object') return null
+  const rec = data as {
+    id?: unknown
+    type?: unknown
+    description?: unknown
+    status?: unknown
+    result?: unknown
+    error?: unknown
+    startedAt?: unknown
+    completedAt?: unknown
+  }
+  if (typeof rec.id !== 'string' || rec.id === '') return null
+
+  const started = typeof rec.startedAt === 'number' ? rec.startedAt : undefined
+  const completed = typeof rec.completedAt === 'number' ? rec.completedAt : undefined
+  const durationMs = started != null && completed != null && completed >= started ? completed - started : undefined
+
+  return {
+    id: rec.id,
+    type: typeof rec.type === 'string' ? rec.type : undefined,
+    description: typeof rec.description === 'string' ? rec.description : undefined,
+    status: typeof rec.status === 'string' ? rec.status : undefined,
+    result: typeof rec.result === 'string' ? rec.result : undefined,
+    error: typeof rec.error === 'string' ? rec.error : undefined,
+    durationMs
+  }
+}
+
 const IN_PROGRESS_STATUSES = new Set(['started', 'running', 'steered', 'compacted'])
 const FAILED_STATUSES = new Set(['failed', 'stopped', 'aborted', 'error'])
+
+function preview(text: string): string {
+  return text.length > RESULT_PREVIEW_MAX ? text.slice(0, RESULT_PREVIEW_MAX) + '…' : text
+}
 
 /**
  * Map a bridge subagent to an ACP {@link PlanEntry}. ACP's `PlanEntryStatus` has no `failed`
@@ -78,7 +131,17 @@ function toPlanEntry(agent: BridgeSubagent): PlanEntry {
     planStatus = 'pending'
   }
 
-  return { content: content + suffix, priority: 'medium', status: planStatus }
+  const entry: PlanEntry = { content: content + suffix, priority: 'medium', status: planStatus }
+
+  // Carry the subagent's result/error/timing (from `subagents:record`) in `_meta` — a preview a
+  // client can render, without polluting the plan `content`.
+  const subagent: Record<string, unknown> = {}
+  if (agent.result) subagent.result = preview(agent.result)
+  if (agent.error) subagent.error = preview(agent.error)
+  if (agent.durationMs != null) subagent.durationMs = agent.durationMs
+  if (Object.keys(subagent).length) entry._meta = { piAcp: { subagent } }
+
+  return entry
 }
 
 /** Build the ACP Plan `entries` list from the accumulated fleet. */

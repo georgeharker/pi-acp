@@ -30,7 +30,9 @@ import { toolResultToText } from './translate/pi-tools.js'
 import {
   SUBAGENT_PLAN_ENABLED,
   SUBAGENT_PLAN_CUSTOM_TYPE,
+  SUBAGENT_RECORD_CUSTOM_TYPE,
   parseSubagentEntry,
+  parseSubagentRecord,
   toPlanEntries,
   type BridgeSubagent
 } from './subagent-plan.js'
@@ -946,25 +948,42 @@ export class PiAcpSession {
   }
 
   /**
-   * Accumulate the pi-subagents fleet from `acp:subagents` custom entries (emitted by the bundled
-   * pi extension via `pi.appendEntry`, forwarded over RPC as `entry_appended`) and emit an ACP
-   * `plan`. Each entry is one agent's record, or a `{ clear: true }` reset.
+   * Accumulate the pi-subagents fleet from custom entries forwarded over RPC as `entry_appended`,
+   * and emit an ACP `plan`. Two sources are merged by id:
+   *  - `acp:subagents` (our bundled extension): live lifecycle records, or a `{ clear: true }` reset.
+   *  - `subagents:record` (pi-subagents' own): the final status + result/error + timing.
    */
   private handleSubagentEntry(entry: unknown): void {
     if (!SUBAGENT_PLAN_ENABLED) return
     const e = entry as { type?: unknown; customType?: unknown; data?: unknown } | null
-    if (e?.type !== 'custom' || e.customType !== SUBAGENT_PLAN_CUSTOM_TYPE) return
+    if (e?.type !== 'custom') return
 
-    const parsed = parseSubagentEntry(e.data)
-    if (!parsed) return
+    let changed = false
 
-    if ('clear' in parsed) {
-      this.subagentFleet.clear()
-    } else {
-      this.subagentFleet.set(parsed.agent.id, parsed.agent)
+    if (e.customType === SUBAGENT_PLAN_CUSTOM_TYPE) {
+      const parsed = parseSubagentEntry(e.data)
+      if (!parsed) return
+      if ('clear' in parsed) {
+        this.subagentFleet.clear()
+      } else {
+        this.subagentFleet.set(parsed.agent.id, { ...this.subagentFleet.get(parsed.agent.id), ...parsed.agent })
+      }
+      changed = true
+    } else if (e.customType === SUBAGENT_RECORD_CUSTOM_TYPE) {
+      const rec = parseSubagentRecord(e.data)
+      if (!rec) return
+      // Final record enriches the existing live entry (keeps type/description if the record omits them).
+      const prev = this.subagentFleet.get(rec.id)
+      const merged: BridgeSubagent = { ...prev, ...rec }
+      if (prev?.type && !rec.type) merged.type = prev.type
+      if (prev?.description && !rec.description) merged.description = prev.description
+      this.subagentFleet.set(rec.id, merged)
+      changed = true
     }
 
-    this.emit({ sessionUpdate: 'plan', entries: toPlanEntries(this.subagentFleet.values()) })
+    if (changed) {
+      this.emit({ sessionUpdate: 'plan', entries: toPlanEntries(this.subagentFleet.values()) })
+    }
   }
 
   private async handleExtensionSelect(ev: PiRpcEvent, id: string): Promise<void> {

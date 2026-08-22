@@ -2,8 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   parseSubagentEntry,
+  parseSubagentRecord,
   toPlanEntries,
   SUBAGENT_PLAN_CUSTOM_TYPE,
+  SUBAGENT_RECORD_CUSTOM_TYPE,
   type BridgeSubagent
 } from '../../src/acp/subagent-plan.js'
 
@@ -49,6 +51,54 @@ test('toPlanEntries: status mapping', () => {
     toPlanEntries(fleet).map(e => e.status),
     ['pending', 'in_progress', 'in_progress', 'in_progress', 'completed', 'completed', 'completed']
   )
+})
+
+test('SUBAGENT_RECORD_CUSTOM_TYPE is pi-subagents own entry type', () => {
+  assert.equal(SUBAGENT_RECORD_CUSTOM_TYPE, 'subagents:record')
+})
+
+test('parseSubagentRecord: final record with result + duration from timestamps', () => {
+  const rec = parseSubagentRecord({
+    id: 'a',
+    type: 'Explore',
+    description: 'find',
+    status: 'completed',
+    result: 'found 3 files',
+    startedAt: 1000,
+    completedAt: 4200
+  })
+  assert.deepEqual(rec, {
+    id: 'a',
+    type: 'Explore',
+    description: 'find',
+    status: 'completed',
+    result: 'found 3 files',
+    error: undefined,
+    durationMs: 3200
+  })
+})
+
+test('parseSubagentRecord: missing id → null', () => {
+  assert.equal(parseSubagentRecord({ status: 'completed', result: 'x' }), null)
+})
+
+test('toPlanEntries: result/error/duration surface in entry _meta (truncated preview)', () => {
+  const big = 'x'.repeat(5000)
+  const entries = toPlanEntries([
+    { id: '1', type: 'Explore', description: 'a', status: 'completed', result: big, durationMs: 1234 },
+    { id: '2', description: 'b', status: 'error', error: 'boom' },
+    { id: '3', description: 'c', status: 'started' }
+  ] as BridgeSubagent[])
+
+  const meta0 = entries[0]._meta as { piAcp: { subagent: { result: string; durationMs: number } } }
+  assert.equal(meta0.piAcp.subagent.durationMs, 1234)
+  assert.equal(meta0.piAcp.subagent.result.length, 2001) // 2000 + '…'
+  assert.match(meta0.piAcp.subagent.result, /…$/)
+
+  const meta1 = entries[1]._meta as { piAcp: { subagent: { error: string } } }
+  assert.equal(meta1.piAcp.subagent.error, 'boom')
+
+  assert.equal(entries[2]._meta, undefined) // no result/error → no _meta
 })
 
 test('toPlanEntries: content formatting + failed annotation + accepts a Map iterator', () => {
