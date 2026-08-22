@@ -13,8 +13,8 @@
  * `plan` update. A custom entry (vs a transient UI `setStatus`) keeps the payload structured and
  * persisted, and needs no UI context.
  *
- * Activates only when `PI_ACP_SUBAGENT_PLAN=true` — the adapter sets that on the pi process it
- * spawns, so this stays inert in a normal terminal `pi` session.
+ * Activates only under the pi-acp adapter — which sets `PI_ACP=1` on the pi process it spawns — so
+ * this stays inert in a normal terminal `pi` session. No user configuration; it just works.
  *
  * Types are declared locally on purpose: pi-acp does not depend on `@earendil-works/pi-coding-agent`
  * (it drives pi over RPC). pi injects the real API at load time.
@@ -39,7 +39,7 @@ function str(v: unknown): string | undefined {
 }
 
 export default function (pi: PiExtensionApi): void {
-  if (process.env.PI_ACP_SUBAGENT_PLAN !== 'true') return
+  if (process.env.PI_ACP !== '1') return
 
   // Keep each agent's merged record so every appended entry is self-contained (later lifecycle
   // events like `steered` carry only an id).

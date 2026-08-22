@@ -186,7 +186,9 @@ export class PiRpcProcess {
     const child = spawn(cmd, args, {
       cwd: params.cwd,
       stdio: 'pipe',
-      env: process.env,
+      // Mark the spawned pi as running under the ACP adapter so the bundled pi extension
+      // (subagent → plan bridge) activates here but stays inert in a normal terminal `pi`.
+      env: { ...process.env, PI_ACP: '1' },
       shell: shouldUseShellForPiCommand(cmd)
     })
 

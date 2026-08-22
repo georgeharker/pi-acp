@@ -28,7 +28,6 @@ import {
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import {
-  SUBAGENT_PLAN_ENABLED,
   SUBAGENT_PLAN_CUSTOM_TYPE,
   SUBAGENT_RECORD_CUSTOM_TYPE,
   parseSubagentEntry,
@@ -954,7 +953,6 @@ export class PiAcpSession {
    *  - `subagents:record` (pi-subagents' own): the final status + result/error + timing.
    */
   private handleSubagentEntry(entry: unknown): void {
-    if (!SUBAGENT_PLAN_ENABLED) return
     const e = entry as { type?: unknown; customType?: unknown; data?: unknown } | null
     if (e?.type !== 'custom') return
 

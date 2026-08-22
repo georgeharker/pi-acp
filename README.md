@@ -118,7 +118,6 @@ Point your ACP client to the built `dist/index.js`:
 - Default: unset/any other value means `false`.
 - When disabled, compliant ACP clients should avoid sending embedded `resource` blocks. If they send them anyway, `pi-acp` still degrades gracefully by converting them into plain-text prompt context.
 - `PI_ACP_DATA_DIR` overrides the default location for pi-acp's own data directory (default: `~/.pi/pi-acp`). This controls where the session-map file and any future adapter-owned data is stored. Separate from `PI_CODING_AGENT_DIR`, which rehomes pi's own agent directory.
-- `PI_ACP_SUBAGENT_PLAN=true` surfaces the [pi-subagents](https://github.com/tintinweb/pi-subagents) fleet as an ACP **plan** (task list). See [Subagents as tasks](#subagents-as-tasks).
 
 You can add the environment variable in the Zed settings with:
 
@@ -186,17 +185,16 @@ into a `plan` update. `CustomEntry` (not `CustomMessageEntry`) is used deliberat
 state is recorded without entering the model's context. `entry_appended` forwards while a turn is
 active (subagents run inside turns), so plan updates track the fleet during a prompt.
 
-To enable:
+No configuration — it just works once the two packages are installed:
 
-1. Install pi-subagents and pi-acp as pi packages:
-   ```bash
-   pi install npm:@tintinweb/pi-subagents
-   pi install npm:pi-acp          # loads pi-acp's pi.extensions entry (the bridge)
-   ```
-2. Set `PI_ACP_SUBAGENT_PLAN=true` in pi-acp's environment. The adapter reads it (to consume the
-   `acp:subagents` entries) and passes it through to the pi process it spawns (to activate the
-   extension). The extension stays inert without this flag, so it has no effect on normal terminal
-   `pi` sessions.
+```bash
+pi install npm:@tintinweb/pi-subagents
+pi install npm:pi-acp          # loads pi-acp's pi.extensions entry (the bridge)
+```
+
+The adapter marks the pi process it spawns with `PI_ACP=1`, which activates the bundled extension
+there; the extension stays inert in a normal terminal `pi` session (no marker), so it has no effect
+outside the adapter.
 
 ACP `PlanEntryStatus` has no `failed` value, so a failed subagent is shown as `completed` with a
 `(failed)` annotation.

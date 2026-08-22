@@ -22,9 +22,6 @@ export const SUBAGENT_PLAN_CUSTOM_TYPE = 'acp:subagents'
  */
 export const SUBAGENT_RECORD_CUSTOM_TYPE = 'subagents:record'
 
-/** Whether subagent→plan mapping is enabled (opt-in while experimental). */
-export const SUBAGENT_PLAN_ENABLED = process.env.PI_ACP_SUBAGENT_PLAN === 'true'
-
 /** Max characters of `result`/`error` carried in a plan entry's `_meta` (a preview, not the full text). */
 const RESULT_PREVIEW_MAX = 2000
 
