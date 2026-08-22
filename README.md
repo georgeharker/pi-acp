@@ -179,9 +179,12 @@ subagent fleet as an ACP plan — each subagent becomes a task with `pending` / 
 
 Because pi's RPC mode does not forward pi's in-process event bus (`subagents:*`), the bridging is
 done by a pi extension. The `pi-acp` package doubles as that extension (`src/pi-extension.ts`,
-declared under `pi.extensions`): loaded inside pi, it subscribes to the bus and re-emits the fleet as
-a `setStatus("acp:subagents", …)` snapshot that crosses the RPC boundary; the adapter maps it to a
-`plan` update.
+declared under `pi.extensions`): loaded inside pi, it subscribes to the bus and, for each change,
+persists a **`CustomEntry`** via `pi.appendEntry("acp:subagents", <record>)`. Appending emits an
+`entry_appended` event, which pi forwards over RPC (unlike the bus itself); the adapter decodes it
+into a `plan` update. `CustomEntry` (not `CustomMessageEntry`) is used deliberately so the fleet
+state is recorded without entering the model's context. `entry_appended` forwards while a turn is
+active (subagents run inside turns), so plan updates track the fleet during a prompt.
 
 To enable:
 
@@ -190,9 +193,10 @@ To enable:
    pi install npm:@tintinweb/pi-subagents
    pi install npm:pi-acp          # loads pi-acp's pi.extensions entry (the bridge)
    ```
-2. Set `PI_ACP_SUBAGENT_PLAN=true` in pi-acp's environment. The adapter reads it (to consume the plan
-   snapshots) and passes it through to the pi process it spawns (to activate the extension). The
-   extension stays inert without this flag, so it has no effect on normal terminal `pi` sessions.
+2. Set `PI_ACP_SUBAGENT_PLAN=true` in pi-acp's environment. The adapter reads it (to consume the
+   `acp:subagents` entries) and passes it through to the pi process it spawns (to activate the
+   extension). The extension stays inert without this flag, so it has no effect on normal terminal
+   `pi` sessions.
 
 ACP `PlanEntryStatus` has no `failed` value, so a failed subagent is shown as `completed` with a
 `(failed)` annotation.

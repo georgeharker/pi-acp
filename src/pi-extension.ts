@@ -5,11 +5,13 @@
  * role of the same package: a pi extension, loaded when you `pi install npm:pi-acp`, that
  * surfaces the pi-subagents fleet to the adapter as an ACP plan.
  *
- * pi's RPC mode forwards the AgentSession event stream + `extension_ui_request`, but NOT the
- * in-process `pi.events` bus — so the adapter (an external RPC client) can't see `subagents:*`
- * events directly. This extension runs inside pi, subscribes to that bus, and re-emits the whole
- * fleet as a `setStatus("acp:subagents", …)` snapshot, which DOES cross the RPC boundary. The
- * adapter (src/acp/subagent-plan.ts) decodes it into an ACP `plan` update.
+ * pi's RPC mode forwards the AgentSession event stream but NOT the in-process `pi.events` bus, so
+ * the adapter (an external RPC client) can't see `subagents:*` events directly. This extension runs
+ * inside pi, subscribes to that bus, and for each change persists a custom session entry via
+ * `pi.appendEntry("acp:subagents", <record>)`. Appending an entry emits `entry_appended`, which pi
+ * DOES forward over RPC — so the adapter (src/acp/subagent-plan.ts) can decode it into an ACP
+ * `plan` update. A custom entry (vs a transient UI `setStatus`) keeps the payload structured and
+ * persisted, and needs no UI context.
  *
  * Activates only when `PI_ACP_SUBAGENT_PLAN=true` — the adapter sets that on the pi process it
  * spawns, so this stays inert in a normal terminal `pi` session.
@@ -18,7 +20,7 @@
  * (it drives pi over RPC). pi injects the real API at load time.
  */
 
-const STATUS_KEY = 'acp:subagents'
+const CUSTOM_TYPE = 'acp:subagents'
 
 type BusHandler = (data: unknown) => void
 type HookHandler = (event: unknown, ctx: unknown) => void
@@ -26,11 +28,11 @@ type HookHandler = (event: unknown, ctx: unknown) => void
 interface PiExtensionApi {
   on(event: string, handler: HookHandler): void
   events: { on(channel: string, handler: BusHandler): () => void }
+  appendEntry(customType: string, data?: unknown): string
 }
 
 type Agent = { id: string; type?: string; description?: string; status: string }
 type LifecyclePayload = { id?: unknown; type?: unknown; description?: unknown }
-type UiContext = { ui?: { setStatus?: (key: string, text: string | undefined) => void } }
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined
@@ -39,22 +41,15 @@ function str(v: unknown): string | undefined {
 export default function (pi: PiExtensionApi): void {
   if (process.env.PI_ACP_SUBAGENT_PLAN !== 'true') return
 
+  // Keep each agent's merged record so every appended entry is self-contained (later lifecycle
+  // events like `steered` carry only an id).
   const agents = new Map<string, Agent>()
-  let ui: UiContext['ui'] | null = null
 
-  // ctx.ui isn't handed to bus handlers, so capture it from hooks that carry it.
-  const capture: HookHandler = (_event, ctx) => {
-    const candidate = (ctx as UiContext)?.ui
-    if (candidate?.setStatus) ui = candidate
-  }
-  pi.on('session_start', capture)
-  pi.on('tool_execution_start', capture)
-
-  const push = (): void => {
+  const append = (data: unknown): void => {
     try {
-      ui?.setStatus?.(STATUS_KEY, JSON.stringify({ v: 1, agents: [...agents.values()] }))
+      pi.appendEntry(CUSTOM_TYPE, data)
     } catch {
-      // best effort; a dropped snapshot self-heals on the next event
+      // best effort; a dropped record self-heals on the next event
     }
   }
 
@@ -64,8 +59,15 @@ export default function (pi: PiExtensionApi): void {
       const p = data as LifecyclePayload
       const id = str(p?.id)
       if (!id) return
-      agents.set(id, { id, type: str(p.type), description: str(p.description), status })
-      push()
+      const prev = agents.get(id)
+      const agent: Agent = {
+        id,
+        type: str(p.type) ?? prev?.type,
+        description: str(p.description) ?? prev?.description,
+        status
+      }
+      agents.set(id, agent)
+      append(agent)
     }
 
   pi.events.on('subagents:created', record('created'))
@@ -75,9 +77,9 @@ export default function (pi: PiExtensionApi): void {
   pi.events.on('subagents:steered', record('steered'))
   pi.events.on('subagents:compacted', record('compacted'))
 
-  // Clear the plan when the session ends so a stale fleet doesn't linger.
+  // Reset the plan when the session ends so a stale fleet doesn't linger.
   pi.on('session_shutdown', () => {
     agents.clear()
-    push()
+    append({ clear: true })
   })
 }

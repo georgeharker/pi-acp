@@ -27,7 +27,13 @@ import {
   isBashTool
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
-import { SUBAGENT_PLAN_ENABLED, SUBAGENT_PLAN_STATUS_KEY, parseSubagentStatus, toPlanEntries } from './subagent-plan.js'
+import {
+  SUBAGENT_PLAN_ENABLED,
+  SUBAGENT_PLAN_CUSTOM_TYPE,
+  parseSubagentEntry,
+  toPlanEntries,
+  type BridgeSubagent
+} from './subagent-plan.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -295,6 +301,9 @@ export class PiAcpSession {
   // Some pi events can arrive out of order (e.g. late toolcall_* deltas after execution starts),
   // and clients may hide progress if we ever downgrade back to `pending`.
   private currentToolCalls = new Map<string, 'pending' | 'in_progress'>()
+
+  // Accumulated pi-subagents fleet (from `acp:subagents` custom entries), keyed by agent id.
+  private subagentFleet = new Map<string, BridgeSubagent>()
 
   // pi can emit multiple `turn_end` and `agent_end` events for a single user prompt
   // when retry, compaction, or queued continuations run. The session-level prompt
@@ -839,6 +848,11 @@ export class PiAcpSession {
         break
       }
 
+      case 'entry_appended': {
+        this.handleSubagentEntry((ev as any).entry)
+        break
+      }
+
       case 'agent_start': {
         this.inAgentLoop = true
         break
@@ -928,21 +942,29 @@ export class PiAcpSession {
       return
     }
 
-    // Subagent → ACP Plan: a companion bridge extension pushes the pi-subagents fleet as a
-    // `setStatus` snapshot on the "acp:subagents" key. Map it to a `plan` update. Fire-and-forget:
-    // consume it (the cancelled response is harmless; setStatus awaits nothing).
-    if (method === 'setStatus') {
-      if (SUBAGENT_PLAN_ENABLED && stringProp(ev, 'statusKey') === SUBAGENT_PLAN_STATUS_KEY) {
-        const agents = parseSubagentStatus(stringProp(ev, 'statusText'))
-        if (agents) {
-          this.emit({ sessionUpdate: 'plan', entries: toPlanEntries(agents) })
-        }
-      }
-      await this.proc.sendExtensionUiResponse({ id, cancelled: true })
-      return
+    await this.proc.sendExtensionUiResponse({ id, cancelled: true })
+  }
+
+  /**
+   * Accumulate the pi-subagents fleet from `acp:subagents` custom entries (emitted by the bundled
+   * pi extension via `pi.appendEntry`, forwarded over RPC as `entry_appended`) and emit an ACP
+   * `plan`. Each entry is one agent's record, or a `{ clear: true }` reset.
+   */
+  private handleSubagentEntry(entry: unknown): void {
+    if (!SUBAGENT_PLAN_ENABLED) return
+    const e = entry as { type?: unknown; customType?: unknown; data?: unknown } | null
+    if (e?.type !== 'custom' || e.customType !== SUBAGENT_PLAN_CUSTOM_TYPE) return
+
+    const parsed = parseSubagentEntry(e.data)
+    if (!parsed) return
+
+    if ('clear' in parsed) {
+      this.subagentFleet.clear()
+    } else {
+      this.subagentFleet.set(parsed.agent.id, parsed.agent)
     }
 
-    await this.proc.sendExtensionUiResponse({ id, cancelled: true })
+    this.emit({ sessionUpdate: 'plan', entries: toPlanEntries(this.subagentFleet.values()) })
   }
 
   private async handleExtensionSelect(ev: PiRpcEvent, id: string): Promise<void> {
