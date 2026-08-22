@@ -27,6 +27,7 @@ import {
   isBashTool
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
+import { SUBAGENT_PLAN_ENABLED, SUBAGENT_PLAN_STATUS_KEY, parseSubagentStatus, toPlanEntries } from './subagent-plan.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -923,6 +924,20 @@ export class PiAcpSession {
         content: { type: 'text', text: stringProp(ev, 'message') ?? 'Pi notification' } satisfies ContentBlock,
         _meta: { piAcp: { notify: { level: stringProp(ev, 'notifyType') ?? 'info' } } }
       })
+      await this.proc.sendExtensionUiResponse({ id, cancelled: true })
+      return
+    }
+
+    // Subagent → ACP Plan: a companion bridge extension pushes the pi-subagents fleet as a
+    // `setStatus` snapshot on the "acp:subagents" key. Map it to a `plan` update. Fire-and-forget:
+    // consume it (the cancelled response is harmless; setStatus awaits nothing).
+    if (method === 'setStatus') {
+      if (SUBAGENT_PLAN_ENABLED && stringProp(ev, 'statusKey') === SUBAGENT_PLAN_STATUS_KEY) {
+        const agents = parseSubagentStatus(stringProp(ev, 'statusText'))
+        if (agents) {
+          this.emit({ sessionUpdate: 'plan', entries: toPlanEntries(agents) })
+        }
+      }
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })
       return
     }

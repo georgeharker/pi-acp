@@ -118,6 +118,7 @@ Point your ACP client to the built `dist/index.js`:
 - Default: unset/any other value means `false`.
 - When disabled, compliant ACP clients should avoid sending embedded `resource` blocks. If they send them anyway, `pi-acp` still degrades gracefully by converting them into plain-text prompt context.
 - `PI_ACP_DATA_DIR` overrides the default location for pi-acp's own data directory (default: `~/.pi/pi-acp`). This controls where the session-map file and any future adapter-owned data is stored. Separate from `PI_CODING_AGENT_DIR`, which rehomes pi's own agent directory.
+- `PI_ACP_SUBAGENT_PLAN=true` surfaces the [pi-subagents](https://github.com/tintinweb/pi-subagents) fleet as an ACP **plan** (task list). See [Subagents as tasks](#subagents-as-tasks).
 
 You can add the environment variable in the Zed settings with:
 
@@ -168,6 +169,32 @@ Other built-in commands:
 - Skill commands can be enabled in pi settings and will appear in the slash command list in ACP client as `/skill:skill-name`.
 
 **Note**: Slash commands provided by pi extensions are not currently supported.
+
+## Subagents as tasks
+
+pi itself emits no ACP plans, so the ACP `plan` (task-list) channel is unused. When you use the
+[pi-subagents](https://github.com/tintinweb/pi-subagents) extension, pi-acp can surface the running
+subagent fleet as an ACP plan — each subagent becomes a task with `pending` / `in_progress` /
+`completed` status.
+
+Because pi's RPC mode does not forward pi's in-process event bus (`subagents:*`), a small companion
+extension bridges it: [`pi-acp-subagent-bridge`](extensions/pi-acp-subagent-bridge) runs inside pi,
+subscribes to the bus, and re-emits the fleet as a `setStatus("acp:subagents", …)` snapshot that
+crosses the RPC boundary; pi-acp maps it to a `plan` update.
+
+To enable:
+
+1. Install pi-subagents and the bridge as pi packages:
+   ```bash
+   pi install npm:@tintinweb/pi-subagents
+   pi install npm:pi-acp-subagent-bridge
+   ```
+2. Set `PI_ACP_SUBAGENT_PLAN=true` in pi-acp's environment. pi-acp reads it (to consume the plan
+   snapshots) and passes it through to the pi process it spawns (to activate the bridge). The bridge
+   stays inert without this flag, so it has no effect on normal terminal `pi` sessions.
+
+ACP `PlanEntryStatus` has no `failed` value, so a failed subagent is shown as `completed` with a
+`(failed)` annotation.
 
 ## Authentication (ACP Registry support)
 
