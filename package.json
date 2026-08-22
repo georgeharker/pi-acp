@@ -31,8 +31,14 @@
     "pi-acp": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/pi-extension.ts"
   ],
+  "pi": {
+    "extensions": [
+      "./src/pi-extension.ts"
+    ]
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsup",

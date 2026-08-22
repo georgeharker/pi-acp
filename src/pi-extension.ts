@@ -1,22 +1,32 @@
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-
 /**
- * pi-acp-subagent-bridge
+ * pi extension entry for the `pi-acp` package.
  *
- * A pi extension that surfaces the pi-subagents fleet to the pi-acp ACP adapter.
+ * pi-acp is primarily an external ACP adapter (the `pi-acp` binary). This file is the *other*
+ * role of the same package: a pi extension, loaded when you `pi install npm:pi-acp`, that
+ * surfaces the pi-subagents fleet to the adapter as an ACP plan.
  *
  * pi's RPC mode forwards the AgentSession event stream + `extension_ui_request`, but NOT the
- * in-process `pi.events` bus — so pi-acp (an external RPC client) can't see `subagents:*`
- * events directly. This extension runs inside pi, subscribes to that bus, and re-emits the
- * whole fleet as a `setStatus("acp:subagents", …)` snapshot, which DOES cross the RPC boundary.
- * pi-acp decodes it into an ACP `plan` update.
+ * in-process `pi.events` bus — so the adapter (an external RPC client) can't see `subagents:*`
+ * events directly. This extension runs inside pi, subscribes to that bus, and re-emits the whole
+ * fleet as a `setStatus("acp:subagents", …)` snapshot, which DOES cross the RPC boundary. The
+ * adapter (src/acp/subagent-plan.ts) decodes it into an ACP `plan` update.
  *
- * Install it like any pi package (e.g. `pi install npm:pi-acp-subagent-bridge`). It activates
- * only when `PI_ACP_SUBAGENT_PLAN=true` is present in the environment — pi-acp sets that on the
- * pi process it spawns, so the bridge stays inert in a normal terminal pi session.
+ * Activates only when `PI_ACP_SUBAGENT_PLAN=true` — the adapter sets that on the pi process it
+ * spawns, so this stays inert in a normal terminal `pi` session.
+ *
+ * Types are declared locally on purpose: pi-acp does not depend on `@earendil-works/pi-coding-agent`
+ * (it drives pi over RPC). pi injects the real API at load time.
  */
 
 const STATUS_KEY = 'acp:subagents'
+
+type BusHandler = (data: unknown) => void
+type HookHandler = (event: unknown, ctx: unknown) => void
+
+interface PiExtensionApi {
+  on(event: string, handler: HookHandler): void
+  events: { on(channel: string, handler: BusHandler): () => void }
+}
 
 type Agent = { id: string; type?: string; description?: string; status: string }
 type LifecyclePayload = { id?: unknown; type?: unknown; description?: unknown }
@@ -26,14 +36,14 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined
 }
 
-export default function (pi: ExtensionAPI): void {
+export default function (pi: PiExtensionApi): void {
   if (process.env.PI_ACP_SUBAGENT_PLAN !== 'true') return
 
   const agents = new Map<string, Agent>()
   let ui: UiContext['ui'] | null = null
 
   // ctx.ui isn't handed to bus handlers, so capture it from hooks that carry it.
-  const capture = (_event: unknown, ctx: unknown): void => {
+  const capture: HookHandler = (_event, ctx) => {
     const candidate = (ctx as UiContext)?.ui
     if (candidate?.setStatus) ui = candidate
   }
@@ -49,8 +59,8 @@ export default function (pi: ExtensionAPI): void {
   }
 
   const record =
-    (status: string) =>
-    (data: unknown): void => {
+    (status: string): BusHandler =>
+    data => {
       const p = data as LifecyclePayload
       const id = str(p?.id)
       if (!id) return

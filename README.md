@@ -177,21 +177,22 @@ pi itself emits no ACP plans, so the ACP `plan` (task-list) channel is unused. W
 subagent fleet as an ACP plan — each subagent becomes a task with `pending` / `in_progress` /
 `completed` status.
 
-Because pi's RPC mode does not forward pi's in-process event bus (`subagents:*`), a small companion
-extension bridges it: [`pi-acp-subagent-bridge`](extensions/pi-acp-subagent-bridge) runs inside pi,
-subscribes to the bus, and re-emits the fleet as a `setStatus("acp:subagents", …)` snapshot that
-crosses the RPC boundary; pi-acp maps it to a `plan` update.
+Because pi's RPC mode does not forward pi's in-process event bus (`subagents:*`), the bridging is
+done by a pi extension. The `pi-acp` package doubles as that extension (`src/pi-extension.ts`,
+declared under `pi.extensions`): loaded inside pi, it subscribes to the bus and re-emits the fleet as
+a `setStatus("acp:subagents", …)` snapshot that crosses the RPC boundary; the adapter maps it to a
+`plan` update.
 
 To enable:
 
-1. Install pi-subagents and the bridge as pi packages:
+1. Install pi-subagents and pi-acp as pi packages:
    ```bash
    pi install npm:@tintinweb/pi-subagents
-   pi install npm:pi-acp-subagent-bridge
+   pi install npm:pi-acp          # loads pi-acp's pi.extensions entry (the bridge)
    ```
-2. Set `PI_ACP_SUBAGENT_PLAN=true` in pi-acp's environment. pi-acp reads it (to consume the plan
-   snapshots) and passes it through to the pi process it spawns (to activate the bridge). The bridge
-   stays inert without this flag, so it has no effect on normal terminal `pi` sessions.
+2. Set `PI_ACP_SUBAGENT_PLAN=true` in pi-acp's environment. The adapter reads it (to consume the plan
+   snapshots) and passes it through to the pi process it spawns (to activate the extension). The
+   extension stays inert without this flag, so it has no effect on normal terminal `pi` sessions.
 
 ACP `PlanEntryStatus` has no `failed` value, so a failed subagent is shown as `completed` with a
 `(failed)` annotation.
