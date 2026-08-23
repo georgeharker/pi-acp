@@ -51,7 +51,7 @@ import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slas
 import { getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
-import { writeMcpConfig, buildMcpNotice } from './mcp-config.js'
+import { writeMcpConfig, buildMcpNotice, cleanupStaleGeneratedConfig } from './mcp-config.js'
 import { isAbsolute } from 'node:path'
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import type { AvailableCommand } from '@agentclientprotocol/sdk'
@@ -204,10 +204,11 @@ export class PiAcpAgent implements ACPAgent {
 
       const cwd = opts?.cwd ?? stored.cwd
 
-      // Write the pi-mcp-adapter config before spawn when the client supplied MCP servers
-      // (session/load, session/resume). Plain restores (e.g. lazy restore on prompt) carry no
-      // servers and leave any existing config untouched.
-      const mcpWrite = writeMcpConfig(cwd, opts?.mcpServers)
+      // Write a session-scoped temp MCP config (passed via `--mcp-config`) when the client supplied
+      // MCP servers (session/load, session/resume). Plain restores (e.g. lazy restore on prompt)
+      // carry no servers and generate nothing. Also clean up a stale generated `<cwd>/.pi/mcp.json`.
+      cleanupStaleGeneratedConfig(cwd)
+      const mcpWrite = writeMcpConfig(opts?.mcpServers)
 
       let proc: PiRpcProcess
       try {
@@ -215,7 +216,8 @@ export class PiAcpAgent implements ACPAgent {
           cwd,
           sessionPath: stored.sessionFile,
           piCommand: process.env.PI_ACP_PI_COMMAND,
-          additionalDirectories: opts?.additionalDirectories
+          additionalDirectories: opts?.additionalDirectories,
+          mcpConfigPath: mcpWrite.handle?.path
         })
       } catch (e: any) {
         if (e?.name === 'PiRpcSpawnError') {
@@ -307,14 +309,17 @@ export class PiAcpAgent implements ACPAgent {
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
 
-    // Translate ACP mcpServers into a pi-mcp-adapter config (`<cwd>/.pi/mcp.json`) that pi
-    // picks up on spawn. Written before create() so the file exists before pi starts.
-    const mcpWrite = writeMcpConfig(params.cwd, params.mcpServers)
+    // Translate ACP mcpServers into a session-scoped temp MCP config passed to pi via `--mcp-config`
+    // (written before create() so it exists before pi starts). Also clean up any stale
+    // `<cwd>/.pi/mcp.json` a previous pi-acp version generated, so it can't win at highest precedence.
+    cleanupStaleGeneratedConfig(params.cwd)
+    const mcpWrite = writeMcpConfig(params.mcpServers)
     const mcpNotice = buildMcpNotice(params.cwd, mcpWrite)
 
     const session = await this.sessions.create({
       cwd: params.cwd,
       mcpServers: params.mcpServers,
+      mcpConfigPath: mcpWrite.handle?.path,
       mcpConfigCleanup: mcpWrite.handle?.cleanup,
       conn: this.conn,
       fileCommands,

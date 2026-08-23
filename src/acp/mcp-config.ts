@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { McpServer } from '@agentclientprotocol/sdk'
 import { getAgentDir } from './pi-settings.js'
+import { getPiAcpMcpPolicyPath } from './paths.js'
 
 // Marker written into generated configs so we only ever overwrite / clean up files
 // that pi-acp authored, never a hand-written `.pi/mcp.json`.
@@ -20,9 +22,87 @@ export type McpTranslation = {
   config: PiMcpConfig
   /** Names of servers we could not express in pi-mcp-adapter's schema (sse / acp). */
   skipped: string[]
+  /** Names skipped because a policy said to defer to the user's own (lower-precedence) config. */
+  preserved: string[]
+}
+
+/**
+ * Policy consulted when generating `.pi/mcp.json`, loaded from
+ * `<PI_ACP_DATA_DIR>/mcp-policy.json` (default `~/.pi/pi-acp/mcp-policy.json`).
+ *
+ * Why: the ACP `McpServer` shape can't express bearer auth, and pi-acp writing a server (repointing
+ * its URL) trips pi-mcp-adapter's URL-bound credential stripping → 401 on an otherwise-configured
+ * server; the generated `<cwd>/.pi/mcp.json` also outranks the user's global config. So the operator
+ * controls which servers pi-acp may generate — **same semantics pi-subagents uses for tool/extension
+ * inheritance** (`true | string[] | false` + an exclude denylist):
+ *
+ *  - `generate`: which servers pi-acp may write. `true`/`"*"`/omitted = all (default, current
+ *    behavior), `string[]` = only those names, `false` = none. Servers NOT generated are
+ *    **preserved** — pi-acp leaves the user's own (lower-precedence) `mcp.json` entry and its auth
+ *    in place. (Names are case-insensitive.)
+ *  - `exclude`: denylist applied after `generate` (exclude wins) — e.g. a globally-configured,
+ *    bearer-auth'd server you never want pi-acp to override.
+ *  - `auth`: for a server pi-acp DOES generate, write `Authorization: Bearer $env:<VAR>` (+ extra
+ *    headers). pi-mcp-adapter interpolates `$env:` at connect, so the token is never on disk and,
+ *    being the entry's own header, survives the URL-bound stripping.
+ *
+ * Shape: `{ "generate": true | "*" | ["a","b"] | false, "exclude": ["x"],
+ *          "auth": { "<name>": { "bearerTokenEnv": "VAR", "headers": {…} } } }`
+ */
+export type McpServerAuth = { bearerTokenEnv?: string; headers?: Record<string, string> }
+export type McpPolicy = {
+  generate?: boolean | '*' | string[]
+  exclude?: string[]
+  auth?: Record<string, McpServerAuth>
 }
 
 type NameValue = { name: string; value: string }
+
+/** Load the MCP generation policy. Missing/invalid file → `{}` (default: generate all). */
+export function loadMcpPolicy(path: string = getPiAcpMcpPolicyPath()): McpPolicy {
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as unknown
+    if (!raw || typeof raw !== 'object') return {}
+    const obj = raw as { generate?: unknown; exclude?: unknown; auth?: unknown }
+    const out: McpPolicy = {}
+
+    if (typeof obj.generate === 'boolean' || obj.generate === '*') out.generate = obj.generate
+    else if (Array.isArray(obj.generate)) out.generate = obj.generate.filter((x): x is string => typeof x === 'string')
+
+    if (Array.isArray(obj.exclude)) out.exclude = obj.exclude.filter((x): x is string => typeof x === 'string')
+
+    if (obj.auth && typeof obj.auth === 'object') {
+      const auth: Record<string, McpServerAuth> = {}
+      for (const [name, val] of Object.entries(obj.auth as Record<string, unknown>)) {
+        if (!val || typeof val !== 'object') continue
+        const v = val as { bearerTokenEnv?: unknown; headers?: unknown }
+        const entry: McpServerAuth = {}
+        if (typeof v.bearerTokenEnv === 'string' && v.bearerTokenEnv) entry.bearerTokenEnv = v.bearerTokenEnv
+        if (v.headers && typeof v.headers === 'object') {
+          const headers: Record<string, string> = {}
+          for (const [k, hv] of Object.entries(v.headers as Record<string, unknown>)) headers[k] = String(hv)
+          if (Object.keys(headers).length) entry.headers = headers
+        }
+        auth[name] = entry
+      }
+      out.auth = auth
+    }
+
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** Whether pi-acp may generate an entry for `name` (exclude wins over generate). Default: yes. */
+function shouldGenerate(name: string, policy: McpPolicy): boolean {
+  const lc = name.toLowerCase()
+  if ((policy.exclude ?? []).some(n => n.toLowerCase() === lc)) return false
+  const gen = policy.generate
+  if (gen === false) return false
+  if (gen === undefined || gen === true || gen === '*') return true
+  return gen.some(n => n.toLowerCase() === lc)
+}
 
 function toRecord(pairs: readonly NameValue[] | undefined): Record<string, string> {
   const out: Record<string, string> = {}
@@ -37,14 +117,26 @@ function toRecord(pairs: readonly NameValue[] | undefined): Record<string, strin
  * (https://github.com/nicobailon/pi-mcp-adapter). stdio and http servers translate
  * cleanly; sse / acp variants are not expressible and are reported as `skipped`.
  */
-export function translateMcpServers(servers: readonly McpServer[] | undefined | null): McpTranslation {
+export function translateMcpServers(
+  servers: readonly McpServer[] | undefined | null,
+  policy: McpPolicy = {}
+): McpTranslation {
   const mcpServers: Record<string, PiMcpEntry> = {}
   const skipped: string[] = []
+  const preserved: string[] = []
 
   for (const server of servers ?? []) {
     const name = String(server.name ?? '').trim()
     if (!name) continue
 
+    if (!shouldGenerate(name, policy)) {
+      // Not in the generate allowlist (or excluded) — leave the user's existing mcp.json entry
+      // (and its auth) in place rather than overriding it.
+      preserved.push(name)
+      continue
+    }
+
+    const rule = policy.auth?.[name]
     const type = (server as { type?: string }).type
 
     if (!type || type === 'stdio') {
@@ -69,7 +161,11 @@ export function translateMcpServers(servers: readonly McpServer[] | undefined | 
         continue
       }
       const entry: PiMcpHttpEntry = { url }
-      const headers = toRecord(http.headers)
+      // Client-sent headers, then policy headers, then a policy bearer — policy wins. The bearer is
+      // written as `$env:VAR` so pi-mcp-adapter resolves it at connect (never stored on disk) and it
+      // survives URL-bound stripping (it's this entry's own header, not inherited).
+      const headers: Record<string, string> = { ...toRecord(http.headers), ...(rule?.headers ?? {}) }
+      if (rule?.bearerTokenEnv) headers['Authorization'] = `Bearer $env:${rule.bearerTokenEnv}`
       if (Object.keys(headers).length) entry.headers = headers
       mcpServers[name] = entry
     } else {
@@ -78,7 +174,7 @@ export function translateMcpServers(servers: readonly McpServer[] | undefined | 
     }
   }
 
-  return { config: { mcpServers, _generatedBy: GENERATED_MARKER }, skipped }
+  return { config: { mcpServers, _generatedBy: GENERATED_MARKER }, skipped, preserved }
 }
 
 export type McpConfigHandle = {
@@ -90,8 +186,8 @@ export type McpConfigHandle = {
 export type WriteMcpConfigResult = {
   handle: McpConfigHandle | null
   skipped: string[]
-  /** True when a hand-authored `.pi/mcp.json` already existed and we left it untouched. */
-  preservedExisting: boolean
+  /** Server names not generated because the policy said to defer to the user's own config. */
+  preserved: string[]
 }
 
 function isGeneratedConfig(path: string): boolean {
@@ -104,41 +200,63 @@ function isGeneratedConfig(path: string): boolean {
 }
 
 /**
- * Write a `<cwd>/.pi/mcp.json` from the ACP-provided MCP servers so pi-mcp-adapter
- * picks them up. Returns `handle: null` when there is nothing to write or when a
- * hand-authored config is present (which we never clobber).
+ * Write the ACP-provided MCP servers to a **session-scoped temp file** for pi-mcp-adapter, passed to
+ * pi via `--mode rpc --mcp-config <path>` (see PiRpcProcess.spawn). This deliberately does NOT write
+ * `<cwd>/.pi/mcp.json`: that path is pi's own highest-precedence *project config namespace*
+ * (settings, prompts, trust, mcp), so writing there overrode the user's global config, persisted
+ * past the session, and poisoned unrelated (even non-ACP) pi sessions launched from the same cwd.
+ * `--mcp-config` overrides only pi-mcp-adapter's pi-global source, never pi's config dir; the temp
+ * file is removed on session end (and a leaked one only shadows the rarely-used `<agentDir>/mcp.json`).
+ * Returns `handle: null` when there is nothing to write.
  */
-export function writeMcpConfig(cwd: string, servers: readonly McpServer[] | undefined | null): WriteMcpConfigResult {
-  const { config, skipped } = translateMcpServers(servers)
+export function writeMcpConfig(
+  servers: readonly McpServer[] | undefined | null,
+  policy: McpPolicy = loadMcpPolicy()
+): WriteMcpConfigResult {
+  const { config, skipped, preserved } = translateMcpServers(servers, policy)
 
   if (Object.keys(config.mcpServers).length === 0) {
-    return { handle: null, skipped, preservedExisting: false }
+    return { handle: null, skipped, preserved }
   }
 
-  const dir = join(cwd, '.pi')
-  const path = join(dir, 'mcp.json')
-
-  if (existsSync(path) && !isGeneratedConfig(path)) {
-    // Respect a config the user (or another tool) wrote.
-    return { handle: null, skipped, preservedExisting: true }
-  }
-
+  // The file may contain secrets the client sent literally (an Authorization header value, or stdio
+  // `env` values like API keys). `mkdtempSync` gives a 0700 (owner-only) parent dir; write the file
+  // 0600 too as defense-in-depth. The durable way to keep a bearer OFF disk is the policy's
+  // `bearerTokenEnv`, which writes `Bearer $env:VAR` (interpolated by pi-mcp-adapter at connect).
+  let dir: string
+  let path: string
   try {
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(path, JSON.stringify(config, null, 2) + '\n', 'utf-8')
+    dir = mkdtempSync(join(tmpdir(), 'pi-acp-mcp-'))
+    path = join(dir, 'mcp.json')
+    writeFileSync(path, JSON.stringify(config, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 })
   } catch {
-    return { handle: null, skipped, preservedExisting: false }
+    return { handle: null, skipped, preserved }
   }
 
   const cleanup = () => {
     try {
-      if (existsSync(path) && isGeneratedConfig(path)) rmSync(path, { force: true })
+      rmSync(dir, { recursive: true, force: true })
     } catch {
-      // best effort
+      // best effort; the file lives in the OS temp dir
     }
   }
 
-  return { handle: { path, cleanup }, skipped, preservedExisting: false }
+  return { handle: { path, cleanup }, skipped, preserved }
+}
+
+/**
+ * Best-effort removal of a stale `<cwd>/.pi/mcp.json` that a PREVIOUS pi-acp version generated
+ * (marked `_generatedBy: pi-acp`). Older builds wrote into pi's project config namespace; a leftover
+ * one still wins at highest precedence and would re-introduce the override/persistence hazard. Only
+ * ever removes a file pi-acp authored — never a hand-written config.
+ */
+export function cleanupStaleGeneratedConfig(cwd: string): void {
+  const path = join(cwd, '.pi', 'mcp.json')
+  try {
+    if (existsSync(path) && isGeneratedConfig(path)) rmSync(path, { force: true })
+  } catch {
+    // best effort
+  }
 }
 
 /** Best-effort check of pi settings for a `pi-mcp-adapter` package entry. */
@@ -163,7 +281,7 @@ export function piMcpAdapterInstalled(cwd: string): boolean {
  */
 export function buildMcpNotice(
   cwd: string,
-  result: Pick<WriteMcpConfigResult, 'handle' | 'skipped' | 'preservedExisting'>
+  result: Pick<WriteMcpConfigResult, 'handle' | 'skipped' | 'preserved'>
 ): string | null {
   const lines: string[] = []
 
@@ -174,8 +292,8 @@ export function buildMcpNotice(
     )
   }
 
-  if (result.preservedExisting) {
-    lines.push('An existing `.pi/mcp.json` was left untouched; MCP servers from the client were not written.')
+  if (result.preserved?.length) {
+    lines.push(`MCP servers deferred to your existing config (auth policy): ${result.preserved.join(', ')}.`)
   }
 
   if (result.skipped.length) {

@@ -262,11 +262,52 @@ Project layout:
 ## MCP servers
 
 MCP servers passed by the ACP client (`session/new`, `session/load`, `session/resume`) are translated
-into a generated `<cwd>/.pi/mcp.json` that [pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter)
-reads on spawn. stdio and http servers are supported; sse/acp servers cannot be expressed and are
-skipped with a notice. A hand-authored `.pi/mcp.json` is never overwritten, and generated files are
-removed when the session closes. Install `pi-mcp-adapter` in your pi `packages` for the servers to
-actually load — the adapter emits a startup notice when it is missing.
+into a **session-scoped temp file** and handed to [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter)
+via `pi --mode rpc --mcp-config <tempfile>`. stdio and http servers are supported; sse/acp servers
+cannot be expressed and are skipped with a notice. The temp file is removed when the session closes.
+Install `pi-mcp-adapter` in your pi `packages` for the servers to actually load — the adapter emits a
+startup notice when it is missing.
+
+The temp file may hold secrets the client sent literally (an `Authorization` header value, or stdio
+`env` values), so it is written in an owner-only (`0700`) temp dir with `0600` permissions. To keep a
+bearer token off disk entirely, express it as `$env:VAR` (via the policy's `auth.bearerTokenEnv`, or a
+`$env:`-valued header from the client) — pi-mcp-adapter resolves `$env:` at connect, so only the
+placeholder is written.
+
+pi-acp deliberately **does not** write `<cwd>/.pi/mcp.json`. That path is pi's own highest-precedence
+project config namespace (settings, prompts, trust, mcp): writing there overrode the user's global
+MCP config, persisted past the session, and leaked into unrelated (even non-ACP) pi sessions launched
+from the same directory. `--mcp-config` overrides only pi-mcp-adapter's `pi-global` source, never pi's
+config dir, so all of pi's own MCP config (global and project) still flows through. A stale
+`<cwd>/.pi/mcp.json` left by an older pi-acp version (marked `_generatedBy: pi-acp`) is cleaned up
+automatically.
+
+### MCP generation policy
+
+By default pi-acp generates every ACP-provided server into the temp overlay (additive — it never
+overrides your own config). To control which servers it generates — same semantics pi uses for
+subagent tool/extension inheritance — create `~/.pi/pi-acp/mcp-policy.json` (under `PI_ACP_DATA_DIR`):
+
+```json
+{
+  "generate": "*",
+  "exclude": ["mcp-combiner"],
+  "auth": {
+    "some-http-server": { "bearerTokenEnv": "MY_TOKEN", "headers": { "X-Extra": "v" } }
+  }
+}
+```
+
+- **`generate`** — which servers pi-acp may write: `true`/`"*"`/omitted = all (default) · `["a","b"]` =
+  only those · `false` = none. Servers not generated are left to your own (lower-precedence) config.
+- **`exclude`** — denylist (wins over `generate`): never generate these. Use it for a server you
+  configure globally with its own auth (e.g. a bearer-auth'd combiner) so pi-acp doesn't override it.
+- **`auth`** — for a server pi-acp _does_ generate, write `Authorization: Bearer $env:<VAR>` (+ extra
+  headers). pi-mcp-adapter interpolates `$env:` at connect, so the token is never written to disk.
+
+Names are case-insensitive. Note the ACP MCP shape has no dedicated auth field, so bearer auth can
+only travel as an HTTP header — either provided by the client in the server's `headers`, or added via
+this policy's `auth`.
 
 - Additional workspace roots are not a hard filesystem boundary: pi can operate outside them. They are communicated to the model (workspace awareness), not enforced as a sandbox.
 - Assistant streaming is currently sent as `agent_message_chunk` (no separate thought stream).

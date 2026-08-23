@@ -82,6 +82,12 @@ type SpawnParams = {
    * `--append-system-prompt` since pi has no native multi-root workspace support.
    */
   additionalDirectories?: readonly string[]
+  /**
+   * Path to a generated MCP config passed to pi-mcp-adapter via `--mcp-config`. pi ignores the flag
+   * (it's an extension flag), and the adapter reads it as its pi-global config source — so we never
+   * write into pi's own `<cwd>/.pi/` config namespace.
+   */
+  mcpConfigPath?: string
 }
 
 /**
@@ -190,6 +196,9 @@ export class PiRpcProcess {
     // (e.g. MCP extensions, prompt templates for workflows).
     const args = ['--mode', 'rpc', '--no-themes']
     if (params.sessionPath) args.push('--session', params.sessionPath)
+    // pi treats unknown `--` flags as extension flags (no error in rpc mode); pi-mcp-adapter reads
+    // `--mcp-config` from argv. This overrides only the adapter's pi-global source, not pi's config dir.
+    if (params.mcpConfigPath) args.push('--mcp-config', params.mcpConfigPath)
 
     // Workspace roots go through `--append-system-prompt`, which pi resolves from a
     // file when the argument is an existing path. Using a temp file (instead of inline

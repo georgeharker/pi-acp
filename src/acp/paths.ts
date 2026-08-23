@@ -15,3 +15,11 @@ export function getPiAcpDir(): string {
 export function getPiAcpSessionMapPath(): string {
   return join(getPiAcpDir(), 'session-map.json')
 }
+
+/**
+ * Per-server MCP auth policy consulted when generating `.pi/mcp.json`
+ * (see src/acp/mcp-config.ts). Defaults to <PI_ACP_DATA_DIR>/mcp-policy.json.
+ */
+export function getPiAcpMcpPolicyPath(): string {
+  return join(getPiAcpDir(), 'mcp-policy.json')
+}

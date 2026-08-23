@@ -1,10 +1,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { McpServer } from '@agentclientprotocol/sdk'
-import { translateMcpServers, writeMcpConfig, buildMcpNotice } from '../../src/acp/mcp-config.js'
+import {
+  translateMcpServers,
+  writeMcpConfig,
+  buildMcpNotice,
+  loadMcpPolicy,
+  cleanupStaleGeneratedConfig
+} from '../../src/acp/mcp-config.js'
 
 function tmpCwd(): string {
   return mkdtempSync(join(tmpdir(), 'pi-acp-mcp-'))
@@ -50,18 +56,25 @@ test('translateMcpServers: sse/acp are skipped, not translated', () => {
   assert.deepEqual(config.mcpServers, {})
 })
 
-test('writeMcpConfig: writes .pi/mcp.json and cleanup removes it', () => {
+test('writeMcpConfig: writes a session-scoped temp file (NOT <cwd>/.pi) and cleanup removes it', () => {
   const cwd = tmpCwd()
   try {
     const servers: McpServer[] = [{ name: 'chrome', command: 'npx', args: [], env: [] }]
-    const res = writeMcpConfig(cwd, servers)
+    const res = writeMcpConfig(servers)
     assert.ok(res.handle)
-    const path = join(cwd, '.pi', 'mcp.json')
-    assert.equal(res.handle!.path, path)
+    const path = res.handle!.path
+    // Not in the project's pi config namespace — a temp file.
+    assert.equal(path.includes(join(cwd, '.pi')), false)
     assert.ok(existsSync(path))
     const parsed = JSON.parse(readFileSync(path, 'utf-8'))
     assert.equal(parsed._generatedBy, 'pi-acp')
     assert.ok(parsed.mcpServers.chrome)
+    // We never touch the project's .pi/mcp.json.
+    assert.equal(existsSync(join(cwd, '.pi', 'mcp.json')), false)
+    // Owner-only perms — the file can carry client-provided header/env secrets.
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(path).mode & 0o777, 0o600)
+    }
 
     res.handle!.cleanup()
     assert.equal(existsSync(path), false)
@@ -71,47 +84,27 @@ test('writeMcpConfig: writes .pi/mcp.json and cleanup removes it', () => {
 })
 
 test('writeMcpConfig: no servers → nothing written', () => {
-  const cwd = tmpCwd()
-  try {
-    const res = writeMcpConfig(cwd, [])
-    assert.equal(res.handle, null)
-    assert.equal(existsSync(join(cwd, '.pi', 'mcp.json')), false)
-  } finally {
-    rmSync(cwd, { recursive: true, force: true })
-  }
+  const res = writeMcpConfig([])
+  assert.equal(res.handle, null)
 })
 
-test('writeMcpConfig: preserves a hand-authored config and does not clean it up', () => {
+test('cleanupStaleGeneratedConfig: removes a pi-acp-generated <cwd>/.pi/mcp.json, leaves a hand-authored one', () => {
   const cwd = tmpCwd()
   try {
     const dir = join(cwd, '.pi')
     mkdirSync(dir, { recursive: true })
     const path = join(dir, 'mcp.json')
-    const handwritten = JSON.stringify({ mcpServers: { mine: { command: 'x', args: [] } } }, null, 2)
+
+    // pi-acp-generated (has the marker) → removed.
+    writeFileSync(path, JSON.stringify({ mcpServers: {}, _generatedBy: 'pi-acp' }), 'utf-8')
+    cleanupStaleGeneratedConfig(cwd)
+    assert.equal(existsSync(path), false)
+
+    // hand-authored (no marker) → left untouched.
+    const handwritten = JSON.stringify({ mcpServers: { mine: { command: 'x', args: [] } } })
     writeFileSync(path, handwritten, 'utf-8')
-
-    const servers: McpServer[] = [{ name: 'chrome', command: 'npx', args: [], env: [] }]
-    const res = writeMcpConfig(cwd, servers)
-
-    assert.equal(res.handle, null)
-    assert.equal(res.preservedExisting, true)
-    // Untouched.
+    cleanupStaleGeneratedConfig(cwd)
     assert.equal(readFileSync(path, 'utf-8'), handwritten)
-  } finally {
-    rmSync(cwd, { recursive: true, force: true })
-  }
-})
-
-test('writeMcpConfig: overwrites a previously-generated config', () => {
-  const cwd = tmpCwd()
-  try {
-    const first = writeMcpConfig(cwd, [{ name: 'a', command: 'a', args: [], env: [] }])
-    assert.ok(first.handle)
-    const second = writeMcpConfig(cwd, [{ name: 'b', command: 'b', args: [], env: [] }])
-    assert.ok(second.handle)
-    const parsed = JSON.parse(readFileSync(join(cwd, '.pi', 'mcp.json'), 'utf-8'))
-    assert.ok(parsed.mcpServers.b)
-    assert.equal(parsed.mcpServers.a, undefined)
   } finally {
     rmSync(cwd, { recursive: true, force: true })
   }
@@ -127,7 +120,7 @@ test('buildMcpNotice: warns when adapter missing and lists skipped servers', () 
     const notice = buildMcpNotice(cwd, {
       handle: { path: join(cwd, '.pi', 'mcp.json'), cleanup: () => {} },
       skipped: ['streamy'],
-      preservedExisting: false
+      preserved: []
     })
     assert.ok(notice)
     assert.match(notice!, /pi-mcp-adapter/)
@@ -143,9 +136,99 @@ test('buildMcpNotice: warns when adapter missing and lists skipped servers', () 
 test('buildMcpNotice: silent when nothing to report', () => {
   const cwd = tmpCwd()
   try {
-    const notice = buildMcpNotice(cwd, { handle: null, skipped: [], preservedExisting: false })
+    const notice = buildMcpNotice(cwd, { handle: null, skipped: [], preserved: [] })
     assert.equal(notice, null)
   } finally {
     rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('policy: exclude → server is not generated (deferred to user config); others still generated', () => {
+  const servers: McpServer[] = [
+    {
+      type: 'http',
+      name: 'mcp-combiner',
+      url: 'http://127.0.0.1:9741/mcp/tok',
+      headers: [{ name: 'X-Session', value: 'tok' }]
+    },
+    { type: 'http', name: 'other', url: 'http://localhost:1/mcp', headers: [] }
+  ]
+  const { config, preserved } = translateMcpServers(servers, { exclude: ['mcp-combiner'] })
+  assert.deepEqual(preserved, ['mcp-combiner'])
+  assert.equal(config.mcpServers['mcp-combiner'], undefined) // not written — user's own entry stands
+  assert.ok(config.mcpServers.other) // others still generated
+})
+
+test('policy: generate allowlist writes only named servers (rest preserved); case-insensitive', () => {
+  const servers: McpServer[] = [
+    { type: 'http', name: 'Keep', url: 'http://localhost:1/mcp', headers: [] },
+    { type: 'http', name: 'Drop', url: 'http://localhost:2/mcp', headers: [] }
+  ]
+  const { config, preserved } = translateMcpServers(servers, { generate: ['keep'] })
+  assert.ok(config.mcpServers.Keep)
+  assert.equal(config.mcpServers.Drop, undefined)
+  assert.deepEqual(preserved, ['Drop'])
+})
+
+test('policy: generate:false writes nothing (all preserved)', () => {
+  const servers: McpServer[] = [{ type: 'http', name: 'a', url: 'http://localhost:1/mcp', headers: [] }]
+  const { config, preserved } = translateMcpServers(servers, { generate: false })
+  assert.deepEqual(config.mcpServers, {})
+  assert.deepEqual(preserved, ['a'])
+})
+
+test('policy.auth: bearerTokenEnv → writes a $env: Authorization header (no secret on disk)', () => {
+  const servers: McpServer[] = [
+    { type: 'http', name: 'foo', url: 'http://localhost:1/mcp', headers: [{ name: 'X-Session', value: 'tok' }] }
+  ]
+  const { config } = translateMcpServers(servers, {
+    auth: { foo: { bearerTokenEnv: 'FOO_TOKEN', headers: { 'X-Extra': 'e' } } }
+  })
+  const entry = config.mcpServers.foo as { url: string; headers: Record<string, string> }
+  assert.equal(entry.headers['Authorization'], 'Bearer $env:FOO_TOKEN')
+  assert.equal(entry.headers['X-Extra'], 'e')
+  assert.equal(entry.headers['X-Session'], 'tok') // client header preserved
+})
+
+test('auth policy: preserved servers are surfaced in the notice', () => {
+  const cwd = tmpCwd()
+  try {
+    const notice = buildMcpNotice(cwd, {
+      handle: null,
+      skipped: [],
+      preserved: ['mcp-combiner']
+    })
+    assert.match(notice!, /deferred to your existing config/)
+    assert.match(notice!, /mcp-combiner/)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('loadMcpPolicy: parses generate/exclude/auth; missing file → {}', () => {
+  const dir = tmpCwd()
+  try {
+    const p = join(dir, 'policy.json')
+    writeFileSync(
+      p,
+      JSON.stringify({
+        generate: ['keep'],
+        exclude: ['mcp-combiner'],
+        auth: { foo: { bearerTokenEnv: 'T', headers: { A: 'b' } } }
+      })
+    )
+    const loaded = loadMcpPolicy(p)
+    assert.deepEqual(loaded.generate, ['keep'])
+    assert.deepEqual(loaded.exclude, ['mcp-combiner'])
+    assert.equal(loaded.auth?.foo.bearerTokenEnv, 'T')
+    assert.deepEqual(loaded.auth?.foo.headers, { A: 'b' })
+
+    const star = join(dir, 'star.json')
+    writeFileSync(star, JSON.stringify({ generate: '*' }))
+    assert.equal(loadMcpPolicy(star).generate, '*')
+
+    assert.deepEqual(loadMcpPolicy(join(dir, 'nope.json')), {})
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

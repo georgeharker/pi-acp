@@ -45,7 +45,9 @@ type SessionCreateParams = {
   piCommand?: string
   /** ACP additionalDirectories: extra workspace roots beyond cwd (absolute paths). */
   additionalDirectories?: string[]
-  /** Cleanup for a generated `.pi/mcp.json`, invoked when the session is closed. */
+  /** Path to the generated MCP config temp file, passed to pi via `--mcp-config`. */
+  mcpConfigPath?: string
+  /** Cleanup for the generated MCP config temp file, invoked when the session is closed. */
   mcpConfigCleanup?: () => void
 }
 
@@ -220,7 +222,8 @@ export class SessionManager {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
         piCommand: params.piCommand,
-        additionalDirectories: params.additionalDirectories
+        additionalDirectories: params.additionalDirectories,
+        mcpConfigPath: params.mcpConfigPath
       })
     } catch (e) {
       if (e instanceof PiRpcSpawnError) {
