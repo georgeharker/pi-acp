@@ -10,6 +10,24 @@ This is an MVP-style adapter intended to be useful today and easy to iterate on.
 
 Expect some minor breaking changes.
 
+## Differences from upstream
+
+This is a fork of [`svkozak/pi-acp`](https://github.com/svkozak/pi-acp), published to npm as
+**`@geohar/pi-acp`** (upstream is unscoped `pi-acp`). On top of upstream it adds:
+
+- **Subagents as ACP tasks** — a bundled pi extension bridges the
+  [pi-subagents](https://github.com/tintinweb/pi-subagents) fleet into the ACP `plan` channel, so
+  each subagent shows up as a task. See [Subagents as tasks](#subagents-as-tasks).
+- **MCP auto-configuration** — ACP `mcpServers` are translated into a generated `<cwd>/.pi/mcp.json`
+  for [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) to load. See
+  [MCP servers](#mcp-servers).
+- **Multi-root workspaces** — additional workspace roots on `session/new` / `session/load`
+  (`sessionCapabilities.additionalDirectories`), communicated to pi via `--append-system-prompt`.
+- **v2-oriented session capabilities** — advertises `session/resume`, `session/close`, and
+  `mcpCapabilities.http` (steps toward ACP v2 parity; see `docs/v2-parity-and-mcp-plan.md`).
+- **`PI_ACP_DATA_DIR`** — env override for the adapter's own data directory (see
+  [Environment variables](#environment-variables)).
+
 ## Features
 
 - Streams assistant output as ACP `agent_message_chunk`
