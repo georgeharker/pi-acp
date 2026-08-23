@@ -30,6 +30,7 @@ import { toolResultToText } from './translate/pi-tools.js'
 import {
   SUBAGENT_PLAN_CUSTOM_TYPE,
   SUBAGENT_RECORD_CUSTOM_TYPE,
+  mergeSubagent,
   parseSubagentEntry,
   parseSubagentRecord,
   toPlanEntries,
@@ -193,9 +194,19 @@ export class SessionManager {
     this.sessions.delete(sessionId)
   }
 
-  /** Close all sessions except the one with `keepSessionId`. */
-  closeAllExcept(keepSessionId: string): void {
-    for (const [id] of this.sessions) {
+  /** Snapshot of currently-registered session ids (used to make close-others concurrency-safe). */
+  sessionIds(): string[] {
+    return [...this.sessions.keys()]
+  }
+
+  /**
+   * Close all sessions except `keepSessionId`. Pass `among` (a snapshot of ids taken before this
+   * operation began) to close only those, so a session created concurrently — e.g. a second
+   * `newSession` still initializing — is never disposed out from under its own request.
+   */
+  closeAllExcept(keepSessionId: string, among?: readonly string[]): void {
+    const ids = among ?? [...this.sessions.keys()]
+    for (const id of ids) {
       if (id === keepSessionId) continue
       this.close(id)
     }
@@ -343,6 +354,25 @@ export class PiAcpSession {
     this.fileCommands = opts.fileCommands ?? []
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
+    this.proc.onExit(() => this.handleProcExit())
+  }
+
+  /**
+   * pi died (crash, kill, or shutdown). Any in-flight or queued turn will never receive
+   * `agent_settled`, so settle them now instead of leaving the ACP `session/prompt` request hanging.
+   */
+  private handleProcExit(): void {
+    const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
+    const pending = this.pendingTurn
+    const queued = this.turnQueue.splice(0, this.turnQueue.length)
+    this.pendingTurn = null
+    this.inAgentLoop = false
+    if (!pending && queued.length === 0) return
+
+    void this.flushEmits().finally(() => {
+      pending?.resolve(reason)
+      for (const t of queued) t.resolve(reason)
+    })
   }
 
   setStartupInfo(text: string) {
@@ -964,22 +994,25 @@ export class PiAcpSession {
       if ('clear' in parsed) {
         this.subagentFleet.clear()
       } else {
-        this.subagentFleet.set(parsed.agent.id, { ...this.subagentFleet.get(parsed.agent.id), ...parsed.agent })
+        // mergeSubagent is monotonic + field-preserving (pi can emit `started` before `created`).
+        this.subagentFleet.set(parsed.agent.id, mergeSubagent(this.subagentFleet.get(parsed.agent.id), parsed.agent))
       }
       changed = true
     } else if (e.customType === SUBAGENT_RECORD_CUSTOM_TYPE) {
       const rec = parseSubagentRecord(e.data)
       if (!rec) return
-      // Final record enriches the existing live entry (keeps type/description if the record omits them).
-      const prev = this.subagentFleet.get(rec.id)
-      const merged: BridgeSubagent = { ...prev, ...rec }
-      if (prev?.type && !rec.type) merged.type = prev.type
-      if (prev?.description && !rec.description) merged.description = prev.description
-      this.subagentFleet.set(rec.id, merged)
+      // Final record enriches the existing live entry (same monotonic + field-preserving merge).
+      this.subagentFleet.set(rec.id, mergeSubagent(this.subagentFleet.get(rec.id), rec))
       changed = true
     }
 
     if (changed) {
+      if (process.env.PI_ACP_DEBUG) {
+        const summary = Array.from(this.subagentFleet.values(), a => `${a.id.slice(0, 8)}=${a.status ?? '?'}`).join(
+          ', '
+        )
+        process.stderr.write(`[pi-acp] subagent entry (${String(e.customType)}) -> fleet: ${summary}\n`)
+      }
       this.emit({ sessionUpdate: 'plan', entries: toPlanEntries(this.subagentFleet.values()) })
     }
   }

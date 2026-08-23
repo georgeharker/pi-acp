@@ -79,6 +79,7 @@ test('PiAcpAgent: listSessions lists pi sessions and loadSession replays history
       assert.ok(params.sessionPath.endsWith('/0000_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl'))
 
       return {
+        onExit: () => () => {},
         onEvent: () => () => {
           // noop unsubscribe
         },

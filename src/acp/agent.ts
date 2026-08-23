@@ -299,6 +299,11 @@ export class PiAcpAgent implements ACPAgent {
 
     this.lastSessionCwd = params.cwd
 
+    // Snapshot existing sessions BEFORE we create this one, so the "one live subprocess per
+    // connection" cleanup below closes only sessions that predate this call — never a sibling
+    // newSession that is still initializing concurrently (which would kill its subprocess).
+    const preexistingSessionIds: string[] = (this.sessions as any).sessionIds?.() ?? []
+
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
 
@@ -408,7 +413,7 @@ export class PiAcpAgent implements ACPAgent {
       // It does NOT affect other client windows because they run in separate agent processes.
       //
       // (Tests sometimes stub out `this.sessions`, so guard the call.)
-    ;(this.sessions as any).closeAllExcept?.(session.sessionId)
+    ;(this.sessions as any).closeAllExcept?.(session.sessionId, preexistingSessionIds)
 
     const response = {
       sessionId: session.sessionId,
@@ -696,7 +701,7 @@ export class PiAcpAgent implements ACPAgent {
           // On Node installs, `pi` typically resolves to .../@earendil-works/pi-coding-agent/dist/cli.js
           try {
             const whichCmd = process.platform === 'win32' ? 'where' : 'which'
-            const which = spawnSync(whichCmd, ['pi'], { encoding: 'utf-8' })
+            const which = spawnSync(whichCmd, ['pi'], { encoding: 'utf-8', timeout: 2000 })
             const piPath = String(which.stdout ?? '')
               .split(/\r?\n/)[0]
               ?.trim()
@@ -713,7 +718,7 @@ export class PiAcpAgent implements ACPAgent {
 
           // 2) Fallback: ask npm where global modules live.
           try {
-            const npmRoot = spawnSync('npm', ['root', '-g'], { encoding: 'utf-8' })
+            const npmRoot = spawnSync('npm', ['root', '-g'], { encoding: 'utf-8', timeout: 2000 })
             const root = String(npmRoot.stdout ?? '').trim()
             if (root) {
               const p = join(root, '@earendil-works', 'pi-coding-agent', 'CHANGELOG.md')
@@ -978,6 +983,7 @@ export class PiAcpAgent implements ACPAgent {
       throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
     }
 
+    const preexistingSessionIds: string[] = (this.sessions as any).sessionIds?.() ?? []
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
     const additionalDirectories = normalizeAdditionalDirectories(params.additionalDirectories, params.cwd)
     const session = await this.restoreSession(params.sessionId, {
@@ -990,7 +996,7 @@ export class PiAcpAgent implements ACPAgent {
 
     // Policy: within a single ACP connection (one Zed window), keep only one live pi subprocess.
     // (Tests sometimes stub out `this.sessions`, so guard the call.)
-    ;(this.sessions as any).closeAllExcept?.(session.sessionId)
+    ;(this.sessions as any).closeAllExcept?.(session.sessionId, preexistingSessionIds)
 
     // (Optional) ensure mapping stays fresh.
     this.store.upsert({
@@ -1157,6 +1163,10 @@ export class PiAcpAgent implements ACPAgent {
 
     const sessionFile = stored?.sessionFile ?? piSession?.sessionFile
 
+    // Dispose any live pi subprocess for this session first, otherwise it can rewrite the
+    // session file we're about to delete (and we'd leak the subprocess).
+    this.sessions.close(params.sessionId)
+
     if (sessionFile) {
       try {
         if (existsSync(sessionFile)) unlinkSync(sessionFile)
@@ -1187,6 +1197,7 @@ export class PiAcpAgent implements ACPAgent {
     this.sessions.close(params.sessionId)
     this.lastSessionCwd = params.cwd
 
+    const preexistingSessionIds: string[] = (this.sessions as any).sessionIds?.() ?? []
     const session = await this.restoreSession(params.sessionId, {
       cwd: params.cwd,
       mcpServers: params.mcpServers,
@@ -1195,7 +1206,7 @@ export class PiAcpAgent implements ACPAgent {
     const proc = session.proc
     const fileCommands = loadSlashCommands(params.cwd)
 
-    ;(this.sessions as any).closeAllExcept?.(session.sessionId)
+    ;(this.sessions as any).closeAllExcept?.(session.sessionId, preexistingSessionIds)
 
     const { configOptions, modes } = await getSessionConfiguration(proc)
 
@@ -1577,7 +1588,7 @@ function buildUpdateNotice(): string | null {
   // Best-effort update check against npm registry.
   // Important: keep it fast to not slow down session/new.
   try {
-    const piVersion = spawnSync('pi', ['--version'], { encoding: 'utf-8' })
+    const piVersion = spawnSync('pi', ['--version'], { encoding: 'utf-8', timeout: 2000 })
     const installed = (String(piVersion.stdout ?? '').trim() || String(piVersion.stderr ?? '').trim()).replace(
       /^v/i,
       ''
@@ -1614,7 +1625,7 @@ function buildStartupInfo(opts: {
 
   // pi version header
   try {
-    const piVersion = spawnSync('pi', ['--version'], { encoding: 'utf-8' })
+    const piVersion = spawnSync('pi', ['--version'], { encoding: 'utf-8', timeout: 2000 })
     const installed = (String(piVersion.stdout ?? '').trim() || String(piVersion.stderr ?? '').trim()).replace(
       /^v/i,
       ''

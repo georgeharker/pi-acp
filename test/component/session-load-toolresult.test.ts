@@ -16,6 +16,7 @@ test('PiAcpAgent: loadSession replays toolResult as tool_call + tool_call_update
   const originalSpawn = PiRpcProcess.spawn
   ;(PiRpcProcess as any).spawn = async () => {
     return {
+      onExit: () => () => {},
       onEvent: () => () => {},
       getMessages: async () => ({
         messages: [

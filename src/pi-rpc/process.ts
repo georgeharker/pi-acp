@@ -100,14 +100,27 @@ export function buildWorkspaceRootsPrompt(cwd: string, dirs: readonly string[]):
   ].join('\n')
 }
 
+export type PiRpcExitInfo = { code: number | null; signal: NodeJS.Signals | null }
+
+/** Default per-request timeout (ms). Generous so legitimately slow commands (e.g. compaction) finish. */
+const DEFAULT_RPC_TIMEOUT_MS = 120_000
+
 export class PiRpcProcess {
   private readonly child: ChildProcessWithoutNullStreams
-  private readonly pending = new Map<string, { resolve: (v: PiRpcResponse) => void; reject: (e: unknown) => void }>()
+  private readonly pending = new Map<
+    string,
+    { resolve: (v: PiRpcResponse) => void; reject: (e: unknown) => void; timer?: NodeJS.Timeout }
+  >()
   private eventHandlers: Array<(ev: PiRpcEvent) => void> = []
+  private exitHandlers: Array<(info: PiRpcExitInfo) => void> = []
   private readonly preludeLines: string[] = []
+  private readonly rpcTimeoutMs: number
 
   private constructor(child: ChildProcessWithoutNullStreams) {
     this.child = child
+
+    const envTimeout = Number(process.env.PI_ACP_RPC_TIMEOUT_MS)
+    this.rpcTimeoutMs = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : DEFAULT_RPC_TIMEOUT_MS
 
     const rl = readline.createInterface({ input: child.stdout })
     rl.on('line', line => {
@@ -129,6 +142,7 @@ export class PiRpcProcess {
           const pending = this.pending.get(id)
           if (pending) {
             this.pending.delete(id)
+            if (pending.timer) clearTimeout(pending.timer)
             pending.resolve(msg as PiRpcResponse)
             return
           }
@@ -140,14 +154,30 @@ export class PiRpcProcess {
 
     child.on('exit', (code, signal) => {
       const err = new Error(`pi process exited (code=${code}, signal=${signal})`)
-      for (const [, p] of this.pending) p.reject(err)
-      this.pending.clear()
+      this.rejectAllPending(err)
+      // Notify higher layers (e.g. PiAcpSession) so an in-flight turn awaiting `agent_settled`
+      // doesn't hang forever when pi dies mid-turn.
+      const handlers = this.exitHandlers.slice()
+      for (const h of handlers) {
+        try {
+          h({ code: code ?? null, signal: signal ?? null })
+        } catch {
+          // best effort
+        }
+      }
     })
 
     child.on('error', err => {
-      for (const [, p] of this.pending) p.reject(err)
-      this.pending.clear()
+      this.rejectAllPending(err)
     })
+  }
+
+  private rejectAllPending(err: unknown): void {
+    for (const [, p] of this.pending) {
+      if (p.timer) clearTimeout(p.timer)
+      p.reject(err)
+    }
+    this.pending.clear()
   }
 
   static async spawn(params: SpawnParams): Promise<PiRpcProcess> {
@@ -263,6 +293,14 @@ export class PiRpcProcess {
     this.eventHandlers.push(handler)
     return () => {
       this.eventHandlers = this.eventHandlers.filter(h => h !== handler)
+    }
+  }
+
+  /** Subscribe to pi process exit. Fires once when the subprocess exits (crash, kill, or normal). */
+  onExit(handler: (info: PiRpcExitInfo) => void): () => void {
+    this.exitHandlers.push(handler)
+    return () => {
+      this.exitHandlers = this.exitHandlers.filter(h => h !== handler)
     }
   }
 
@@ -384,9 +422,21 @@ export class PiRpcProcess {
     const line = `${JSON.stringify(withId)}\n`
 
     return new Promise<PiRpcResponse>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      // Guard against a request that never gets a correlated response (e.g. pi emits an
+      // uncorrelated parse error with no id). Without this the awaiting handler hangs and the
+      // pending entry leaks. Settles on response id or child exit before this ever fires.
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
+          reject(new Error(`pi RPC request timed out after ${this.rpcTimeoutMs}ms (command: ${cmd.type})`))
+        }
+      }, this.rpcTimeoutMs)
+      if (typeof timer.unref === 'function') timer.unref()
+
+      this.pending.set(id, { resolve, reject, timer })
 
       void this.writeLine(line).catch(error => {
+        const entry = this.pending.get(id)
+        if (entry?.timer) clearTimeout(entry.timer)
         this.pending.delete(id)
         reject(error)
       })

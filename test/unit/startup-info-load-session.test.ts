@@ -25,6 +25,7 @@ test('PiAcpAgent: does not emit startup info on loadSession', async () => {
   const originalSpawn = PiRpcProcess.spawn
   ;(PiRpcProcess as any).spawn = async () => {
     return {
+      onExit: () => () => {},
       onEvent: () => () => {},
       getMessages: async () => ({ messages: [] }),
       getAvailableModels: async () => ({ models: [] }),

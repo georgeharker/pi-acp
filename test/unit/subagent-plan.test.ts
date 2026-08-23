@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   parseSubagentEntry,
   parseSubagentRecord,
+  mergeSubagent,
   toPlanEntries,
   SUBAGENT_PLAN_CUSTOM_TYPE,
   SUBAGENT_RECORD_CUSTOM_TYPE,
@@ -114,4 +115,33 @@ test('toPlanEntries: content formatting + failed annotation + accepts a Map iter
   assert.equal(failed.content, '[Agent] broke (failed)')
   assert.equal(idOnly.content, 'agent-42') // falls back to id when no description
   assert.equal(typed.priority, 'medium')
+})
+
+test('toPlanEntries: terminal statuses map to completed but keep a distinct annotation', () => {
+  const fleet = new Map<string, BridgeSubagent>()
+  fleet.set('a', { id: 'a', description: 'x', status: 'aborted' })
+  fleet.set('e', { id: 'e', description: 'x', status: 'error' })
+  fleet.set('s', { id: 's', description: 'x', status: 'stopped' })
+
+  const [aborted, errored, stopped] = toPlanEntries(fleet.values())
+  // ACP has only pending/in_progress/completed, so all render as completed…
+  assert.equal(aborted.status, 'completed')
+  assert.equal(errored.status, 'completed')
+  assert.equal(stopped.status, 'completed')
+  // …but the raw terminal state is preserved in the content.
+  assert.equal(aborted.content, 'x (aborted)')
+  assert.equal(errored.content, 'x (errored)')
+  assert.equal(stopped.content, 'x (stopped)')
+})
+
+test('mergeSubagent: a specific terminal reason is not clobbered by the generic `failed`', () => {
+  // Specific record status arrives first, then the extension's generic `failed` event.
+  let a = mergeSubagent(undefined, { id: '1', status: 'error' })
+  a = mergeSubagent(a, { id: '1', status: 'failed' })
+  assert.equal(a.status, 'error', 'generic failed must not overwrite the specific error')
+
+  // And the reverse arrival order also keeps the specific reason.
+  let b = mergeSubagent(undefined, { id: '2', status: 'failed' })
+  b = mergeSubagent(b, { id: '2', status: 'aborted' })
+  assert.equal(b.status, 'aborted')
 })

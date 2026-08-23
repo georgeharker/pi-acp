@@ -100,6 +100,58 @@ export function parseSubagentRecord(data: unknown): BridgeSubagent | null {
 const IN_PROGRESS_STATUSES = new Set(['started', 'running', 'steered', 'compacted'])
 const FAILED_STATUSES = new Set(['failed', 'stopped', 'aborted', 'error'])
 
+// ACP PlanEntryStatus has no failed/aborted/errored, so these terminal statuses all render as
+// `completed` — but we keep the distinction in the content suffix instead of flattening to "failed".
+const TERMINAL_LABELS: Record<string, string> = {
+  failed: 'failed',
+  error: 'errored',
+  stopped: 'stopped',
+  aborted: 'aborted'
+}
+
+/**
+ * Lifecycle rank for a raw subagent status: `pending(0) < in_progress(1) < terminal(2)`.
+ * pi-subagents can emit lifecycle events out of order over RPC (observed: `started` arriving
+ * before `created`), so the adapter merges fleet status monotonically — never downgrading to an
+ * earlier stage — using this rank.
+ */
+export function statusRank(status: string | undefined): number {
+  const s = String(status ?? '').toLowerCase()
+  if (s === 'completed' || FAILED_STATUSES.has(s)) return 2
+  if (IN_PROGRESS_STATUSES.has(s)) return 1
+  return 0
+}
+
+/**
+ * Merge one incoming subagent record into the accumulated fleet entry for its id. Single source
+ * of truth for both the live `acp:subagents` lifecycle records and the final `subagents:record`:
+ *  - preserves `type`/`description` when the incoming record omits them,
+ *  - is lifecycle-monotonic on `status` — never downgrades to an earlier stage, since pi can emit
+ *    events out of order (e.g. `started` before `created`).
+ * `result`/`error`/`durationMs` come through from whichever record carries them (records without
+ * those keys don't clobber a prior value).
+ */
+export function mergeSubagent(prev: BridgeSubagent | undefined, incoming: BridgeSubagent): BridgeSubagent {
+  const merged: BridgeSubagent = { ...prev, ...incoming }
+  if (prev?.type && !incoming.type) merged.type = prev.type
+  if (prev?.description && !incoming.description) merged.description = prev.description
+  if (prev) {
+    const prevStatus = String(prev.status ?? '').toLowerCase()
+    const incomingStatus = String(incoming.status ?? '').toLowerCase()
+    const prevRank = statusRank(prevStatus)
+    const incomingRank = statusRank(incomingStatus)
+    if (prevRank > incomingRank) {
+      // Never downgrade to an earlier lifecycle stage (pi can emit `started` before `created`).
+      merged.status = prev.status
+    } else if (prevRank === 2 && incomingRank === 2 && incomingStatus === 'failed' && prevStatus !== 'failed') {
+      // Both terminal: keep the specific reason (error/stopped/aborted/completed) over the generic
+      // `failed` the extension emits from the `subagents:failed` event, regardless of arrival order.
+      merged.status = prev.status
+    }
+  }
+  return merged
+}
+
 function preview(text: string): string {
   return text.length > RESULT_PREVIEW_MAX ? text.slice(0, RESULT_PREVIEW_MAX) + '…' : text
 }
@@ -118,7 +170,7 @@ function toPlanEntry(agent: BridgeSubagent): PlanEntry {
 
   if (FAILED_STATUSES.has(status)) {
     planStatus = 'completed'
-    suffix = ' (failed)'
+    suffix = ` (${TERMINAL_LABELS[status] ?? 'failed'})`
   } else if (status === 'completed') {
     planStatus = 'completed'
   } else if (IN_PROGRESS_STATUSES.has(status)) {

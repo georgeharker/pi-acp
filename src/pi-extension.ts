@@ -13,8 +13,10 @@
  * `plan` update. A custom entry (vs a transient UI `setStatus`) keeps the payload structured and
  * persisted, and needs no UI context.
  *
- * Activates only under the pi-acp adapter — which sets `PI_ACP=1` on the pi process it spawns — so
- * this stays inert in a normal terminal `pi` session. No user configuration; it just works.
+ * Activates when pi runs headless over RPC (`ctx.mode === 'rpc'`) — which is exactly how an ACP
+ * adapter drives it — so this stays inert in a normal terminal (`tui`) `pi` session with no env
+ * var required. `PI_ACP=1` is still honored as an explicit override. No user configuration; it just
+ * works.
  *
  * Types are declared locally on purpose: pi-acp does not depend on `@earendil-works/pi-coding-agent`
  * (it drives pi over RPC). pi injects the real API at load time.
@@ -39,13 +41,17 @@ function str(v: unknown): string | undefined {
 }
 
 export default function (pi: PiExtensionApi): void {
-  if (process.env.PI_ACP !== '1') return
+  // Bridge only when driven headless over RPC (an ACP adapter), not in the interactive TUI, where
+  // these entries would be pointless clutter. `mode` is read from the session_start context (the
+  // extension's own load runs before mode is set). `PI_ACP=1` remains an explicit override.
+  let active = process.env.PI_ACP === '1'
 
   // Keep each agent's merged record so every appended entry is self-contained (later lifecycle
   // events like `steered` carry only an id).
   const agents = new Map<string, Agent>()
 
   const append = (data: unknown): void => {
+    if (!active) return
     try {
       pi.appendEntry(CUSTOM_TYPE, data)
     } catch {
@@ -69,6 +75,13 @@ export default function (pi: PiExtensionApi): void {
       agents.set(id, agent)
       append(agent)
     }
+
+  // Activate only when pi is driven headless over RPC (any ACP adapter). session_start fires
+  // before any subagent event and re-evaluates on new/switch/resume. `PI_ACP=1` stays an override.
+  pi.on('session_start', (_event, ctx) => {
+    const mode = (ctx as { mode?: unknown } | null)?.mode
+    active = mode === 'rpc' || process.env.PI_ACP === '1'
+  })
 
   pi.events.on('subagents:created', record('created'))
   pi.events.on('subagents:started', record('started'))

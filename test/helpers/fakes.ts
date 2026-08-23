@@ -30,6 +30,8 @@ export class FakePiRpcProcess {
   readonly extensionUiResponses: unknown[] = []
   abortCount = 0
 
+  private exitHandlers: Array<(info: { code: number | null; signal: NodeJS.Signals | null }) => void> = []
+
   onEvent(handler: (ev: PiRpcEvent) => void): () => void {
     this.handlers.push(handler)
     return () => {
@@ -37,8 +39,19 @@ export class FakePiRpcProcess {
     }
   }
 
+  onExit(handler: (info: { code: number | null; signal: NodeJS.Signals | null }) => void): () => void {
+    this.exitHandlers.push(handler)
+    return () => {
+      this.exitHandlers = this.exitHandlers.filter(h => h !== handler)
+    }
+  }
+
   emit(ev: PiRpcEvent) {
     for (const h of this.handlers) h(ev)
+  }
+
+  emitExit(info: { code: number | null; signal: NodeJS.Signals | null } = { code: 0, signal: null }) {
+    for (const h of this.exitHandlers) h(info)
   }
 
   async prompt(message: string, attachments: unknown[] = []): Promise<void> {

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { getPiAcpSessionMapPath } from './paths.js'
 
@@ -33,7 +33,21 @@ function loadFile(path: string): SessionMapFile {
 
 function saveFile(path: string, data: SessionMapFile): void {
   ensureParentDir(path)
-  writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+  // Write to a temp file then atomically rename, so a crash mid-write can't corrupt the
+  // session map (a partial write would otherwise fail JSON.parse and reset to `{}`, losing
+  // every mapping). `rename` is atomic on the same filesystem.
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+  try {
+    writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+    renameSync(tmp, path)
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      // best effort
+    }
+    throw err
+  }
 }
 
 export class SessionStore {
