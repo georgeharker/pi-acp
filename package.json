@@ -1,6 +1,6 @@
 {
   "name": "@geohar/pi-acp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ACP adapter for pi coding agent (fork), with a bundled pi extension for subagent→plan",
   "license": "MIT",
   "author": "Sergii Kozak <svkozak@gmail.com>",
