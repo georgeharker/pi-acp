@@ -12,8 +12,7 @@
     "url": "git+https://github.com/georgeharker/pi-acp.git"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "bugs": {
     "url": "https://github.com/georgeharker/pi-acp/issues"
