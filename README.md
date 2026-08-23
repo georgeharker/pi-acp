@@ -13,7 +13,17 @@ Expect some minor breaking changes.
 ## Differences from upstream
 
 This is a fork of [`svkozak/pi-acp`](https://github.com/svkozak/pi-acp), published to npm as
-**`@geohar/pi-acp`** (upstream is unscoped `pi-acp`). On top of upstream it adds:
+**`@geohar/pi-acp`** (upstream is unscoped `pi-acp`).
+
+**Why a fork.** It exists to carry capabilities upstream doesn't have — chiefly surfacing the
+[pi-subagents](https://github.com/tintinweb/pi-subagents) fleet as ACP tasks, auto-configuring MCP
+for pi, multi-root workspaces, and moving toward ACP v2 — and to iterate on them independently. It's
+an independent fork published under the `@geohar` scope so it can be installed and depended on
+directly; it does not track upstream on a schedule, and there's no commitment to contribute these
+changes back (they may or may not be upstreamed later). If you want the original, use
+[`svkozak/pi-acp`](https://github.com/svkozak/pi-acp).
+
+On top of upstream it adds:
 
 - **Subagents as ACP tasks** — a bundled pi extension bridges the
   [pi-subagents](https://github.com/tintinweb/pi-subagents) fleet into the ACP `plan` channel, so
