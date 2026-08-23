@@ -1,5 +1,5 @@
 {
-  "name": "@georgeharker/pi-acp",
+  "name": "@geohar/pi-acp",
   "version": "0.0.33",
   "description": "ACP adapter for pi coding agent (fork), with a bundled pi extension for subagent→plan",
   "license": "MIT",

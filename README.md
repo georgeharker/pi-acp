@@ -69,7 +69,7 @@ Add the following to your Zed `settings.json`:
     "pi": {
       "type": "custom",
       "command": "npx",
-      "args": ["-y", "@georgeharker/pi-acp"],
+      "args": ["-y", "@geohar/pi-acp"],
       "env": {}
     }
   }
@@ -78,7 +78,7 @@ Add the following to your Zed `settings.json`:
 #### Global install
 
 ```bash
-npm install -g @georgeharker/pi-acp
+npm install -g @geohar/pi-acp
 ```
 
 ```json
@@ -189,7 +189,7 @@ No configuration — it just works once the two packages are installed:
 
 ```bash
 pi install npm:@tintinweb/pi-subagents
-pi install npm:@georgeharker/pi-acp   # loads the pi.extensions entry (the bridge)
+pi install npm:@geohar/pi-acp   # loads the pi.extensions entry (the bridge)
 ```
 
 The adapter marks the pi process it spawns with `PI_ACP=1`, which activates the bundled extension
