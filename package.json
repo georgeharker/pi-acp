@@ -1,26 +1,33 @@
 {
-  "name": "pi-acp",
+  "name": "@georgeharker/pi-acp",
   "version": "0.0.33",
-  "description": "ACP adapter for pi coding agent",
+  "description": "ACP adapter for pi coding agent (fork), with a bundled pi extension for subagent→plan",
   "license": "MIT",
   "author": "Sergii Kozak <svkozak@gmail.com>",
+  "contributors": [
+    "George Harker <george@georgeharker.com>"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/svkozak/pi-acp.git"
+    "url": "git+https://github.com/georgeharker/pi-acp.git"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
   "bugs": {
-    "url": "https://github.com/svkozak/pi-acp/issues"
+    "url": "https://github.com/georgeharker/pi-acp/issues"
   },
-  "homepage": "https://github.com/svkozak/pi-acp#readme",
+  "homepage": "https://github.com/georgeharker/pi-acp#readme",
   "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "pi-coding-agent",
     "acp",
     "agent-client-protocol",
-    "pi-coding-agent",
-    "adapter"
+    "adapter",
+    "subagent"
   ],
   "engines": {
     "node": ">=20"
