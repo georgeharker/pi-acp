@@ -1,5 +1,6 @@
 import type {
   AgentSideConnection,
+  ClientCapabilities,
   ContentBlock,
   McpServer,
   PermissionOption,
@@ -49,6 +50,8 @@ type SessionCreateParams = {
   mcpConfigPath?: string
   /** Cleanup for the generated MCP config temp file, invoked when the session is closed. */
   mcpConfigCleanup?: () => void
+  /** Full ACP client capabilities from initialize, used to gate wire features (terminals, plan, fs). */
+  clientCapabilities?: ClientCapabilities
 }
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
@@ -254,7 +257,8 @@ export class SessionManager {
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
       additionalDirectories: params.additionalDirectories ?? [],
-      mcpConfigCleanup: params.mcpConfigCleanup
+      mcpConfigCleanup: params.mcpConfigCleanup,
+      clientCapabilities: params.clientCapabilities
     })
 
     this.sessions.set(sessionId, session)
@@ -283,7 +287,8 @@ export class SessionManager {
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
       additionalDirectories: params.additionalDirectories ?? [],
-      mcpConfigCleanup: params.mcpConfigCleanup
+      mcpConfigCleanup: params.mcpConfigCleanup,
+      clientCapabilities: params.clientCapabilities
     })
 
     this.sessions.set(sessionId, session)
@@ -297,6 +302,7 @@ export class PiAcpSession {
   readonly mcpServers: McpServer[]
   readonly additionalDirectories: string[]
   readonly mcpConfigCleanup?: () => void
+  private readonly clientCapabilities?: ClientCapabilities
 
   private startupInfo: string | null = null
   private startupInfoSent = false
@@ -346,6 +352,7 @@ export class PiAcpSession {
     fileCommands?: FileSlashCommand[]
     additionalDirectories?: string[]
     mcpConfigCleanup?: () => void
+    clientCapabilities?: ClientCapabilities
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -355,6 +362,7 @@ export class PiAcpSession {
     this.proc = opts.proc
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
+    this.clientCapabilities = opts.clientCapabilities
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
     this.proc.onExit(() => this.handleProcExit())
@@ -481,6 +489,16 @@ export class PiAcpSession {
     await this.lastEmit
   }
 
+  /**
+   * Whether this client can render ACP terminals. Bash tool calls use the terminal `_meta`
+   * channel (terminal_output/terminal_exit) only when true; otherwise output is folded into a
+   * plain `content` text block so terminal-less clients (e.g. CodeCompanion) still render bash
+   * results instead of an empty shell.
+   */
+  private clientSupportsTerminal(): boolean {
+    return this.clientCapabilities?.terminal === true
+  }
+
   private emitBashToolCall(params: {
     sessionUpdate: 'tool_call' | 'tool_call_update'
     toolCallId: string
@@ -491,6 +509,7 @@ export class PiAcpSession {
     includeTerminal: boolean
   }): void {
     this.bashToolCallIds.add(params.toolCallId)
+    const useTerminal = params.includeTerminal && this.clientSupportsTerminal()
     this.emit({
       sessionUpdate: params.sessionUpdate,
       toolCallId: params.toolCallId,
@@ -498,8 +517,14 @@ export class PiAcpSession {
       kind: 'execute',
       status: params.status,
       locations: params.locations,
-      ...(params.includeTerminal ? { content: bashTerminalContent(params.toolCallId) } : {}),
-      ...(params.includeTerminal ? { _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd) } : {})
+      // Terminal-capable clients render the embedded terminal; terminal-less clients get the raw
+      // command as structured input so it renders as a proper tool call, not loose text.
+      ...(useTerminal
+        ? {
+            content: bashTerminalContent(params.toolCallId),
+            _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd)
+          }
+        : { rawInput: params.args })
     })
   }
 
@@ -514,15 +539,35 @@ export class PiAcpSession {
     const delta = bashOutputDelta(previous, text)
     this.bashOutputSnapshots.set(params.toolCallId, text)
 
+    const isDone = params.status === 'completed' || params.status === 'failed'
+
+    // Terminal-less clients can't read the terminal `_meta` channel, so emit the accumulated
+    // output as a plain `content` text block. Content blocks replace rather than append, so we
+    // send the full text (not the delta), plus the exit code on a non-zero completion.
+    if (!this.clientSupportsTerminal()) {
+      const exitCode = bashExitCode(params.result, Boolean(params.isError))
+      const body = isDone && exitCode !== 0 ? `${text}\n\nexit code: ${exitCode}` : text
+      // Mirror the generic tool path: a content text block plus structured rawOutput, so clients
+      // render (and can collapse) this as a proper tool call rather than a free-floating text block.
+      this.emit({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: params.toolCallId,
+        status: params.status,
+        content: body
+          ? ([{ type: 'content', content: { type: 'text', text: body } }] satisfies ToolCallContent[])
+          : undefined,
+        rawOutput: params.result
+      })
+      return
+    }
+
     this.emit({
       sessionUpdate: 'tool_call_update',
       toolCallId: params.toolCallId,
       status: params.status,
       _meta: {
         ...(delta ? bashTerminalOutputMeta(params.toolCallId, delta) : {}),
-        ...(params.status === 'completed' || params.status === 'failed'
-          ? bashTerminalExitMeta(params.toolCallId, bashExitCode(params.result, Boolean(params.isError)))
-          : {})
+        ...(isDone ? bashTerminalExitMeta(params.toolCallId, bashExitCode(params.result, Boolean(params.isError))) : {})
       }
     })
   }

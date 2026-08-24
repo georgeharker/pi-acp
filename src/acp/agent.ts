@@ -27,7 +27,8 @@ import {
   type CloseSessionRequest,
   type CloseSessionResponse,
   type LogoutRequest,
-  type LogoutResponse
+  type LogoutResponse,
+  type ClientCapabilities
 } from '@agentclientprotocol/sdk'
 import { getAuthMethods } from './auth.js'
 import { SessionManager, type PiAcpSession } from './session.js'
@@ -134,6 +135,10 @@ export class PiAcpAgent implements ACPAgent {
   private readonly store = new SessionStore()
   private readonly restoringSessions = new Map<string, Promise<PiAcpSession>>()
 
+  // Full ACP client capabilities captured at initialize, threaded into every session so wire
+  // features (terminals, plan, fs) can be gated per the client's advertised support.
+  private clientCapabilities?: ClientCapabilities
+
   dispose(): void {
     this.sessions.disposeAll()
   }
@@ -234,7 +239,8 @@ export class PiAcpAgent implements ACPAgent {
         proc,
         fileCommands,
         additionalDirectories: opts?.additionalDirectories,
-        mcpConfigCleanup: mcpWrite.handle?.cleanup
+        mcpConfigCleanup: mcpWrite.handle?.cleanup,
+        clientCapabilities: this.clientCapabilities
       })
 
       this.lastSessionCwd = cwd
@@ -253,6 +259,9 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
+    // Capture the full client capabilities so sessions can gate wire features (terminals, plan, fs).
+    this.clientCapabilities = params.clientCapabilities
+
     // We currently only support ACP protocol version 1.
     const supportedVersion = 1
     const requested = params.protocolVersion
@@ -324,7 +333,8 @@ export class PiAcpAgent implements ACPAgent {
       conn: this.conn,
       fileCommands,
       piCommand: process.env.PI_ACP_PI_COMMAND,
-      additionalDirectories
+      additionalDirectories,
+      clientCapabilities: this.clientCapabilities
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.
@@ -1051,6 +1061,28 @@ export class PiAcpAgent implements ACPAgent {
 
         if (isBash) {
           const text = bashResultText(m)
+
+          // Terminal-less clients can't read the terminal `_meta` channel, so replay historic bash
+          // as a single completed tool call with a plain `content` text block (output + non-zero
+          // exit code), mirroring the live path in session.ts.
+          if (this.clientCapabilities?.terminal !== true) {
+            const exitCode = bashExitCode(m, isError)
+            const body = exitCode !== 0 ? `${text}\n\nexit code: ${exitCode}` : text
+            await this.conn.sessionUpdate({
+              sessionId: session.sessionId,
+              update: {
+                sessionUpdate: 'tool_call',
+                toolCallId,
+                title: bashCommand(m) ?? toolName,
+                kind: 'execute',
+                status: isError ? 'failed' : 'completed',
+                content: body ? [{ type: 'content', content: { type: 'text', text: body } }] : undefined,
+                rawOutput: m
+              }
+            })
+            continue
+          }
+
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {

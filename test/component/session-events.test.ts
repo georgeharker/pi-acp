@@ -62,7 +62,7 @@ test('PiAcpSession: emits agent_thought_chunk for thinking_delta', async () => {
   })
 })
 
-test('PiAcpSession: emits tool_call + tool_call_update + completes', async () => {
+test('PiAcpSession: emits bash as a terminal when the client supports terminals', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -72,7 +72,8 @@ test('PiAcpSession: emits tool_call + tool_call_update + completes', async () =>
     mcpServers: [],
     proc: proc as any,
     conn: asAgentConn(conn),
-    fileCommands: []
+    fileCommands: [],
+    clientCapabilities: { terminal: true }
   })
 
   proc.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'ls' } })
@@ -122,6 +123,70 @@ test('PiAcpSession: emits tool_call + tool_call_update + completes', async () =>
     terminal_exit: { terminal_id: 't1', exit_code: 0, signal: null }
   })
   assert.equal((conn.updates[2]!.update as any).rawOutput, undefined)
+})
+
+test('PiAcpSession: emits bash as content text blocks when the client lacks terminals', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  // No clientCapabilities → terminal-less fallback.
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'ls' } })
+  proc.emit({
+    type: 'tool_execution_update',
+    toolCallId: 't1',
+    partialResult: { content: [{ type: 'text', text: 'running' }] }
+  })
+  proc.emit({
+    type: 'tool_execution_end',
+    toolCallId: 't1',
+    isError: false,
+    result: { content: [{ type: 'text', text: 'done' }] }
+  })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.equal(conn.updates.length, 3)
+
+  // All three emissions correlate to the same tool call id (the fallback path must not mint new ids).
+  for (const entry of conn.updates) {
+    assert.equal((entry.update as any).toolCallId, 't1')
+  }
+
+  // Initial tool_call renders as a proper tool call: raw command as structured input, no terminal.
+  assert.equal(conn.updates[0]!.update.sessionUpdate, 'tool_call')
+  assert.equal((conn.updates[0]!.update as any).title, 'ls')
+  assert.equal((conn.updates[0]!.update as any).kind, 'execute')
+  assert.equal((conn.updates[0]!.update as any).status, 'in_progress')
+  assert.equal((conn.updates[0]!.update as any).content, undefined)
+  assert.equal((conn.updates[0]!.update as any)._meta, undefined)
+  assert.deepEqual((conn.updates[0]!.update as any).rawInput, { command: 'ls' })
+
+  // Output arrives as a content text block plus structured rawOutput (not terminal _meta).
+  assert.equal(conn.updates[1]!.update.sessionUpdate, 'tool_call_update')
+  assert.equal((conn.updates[1]!.update as any).status, 'in_progress')
+  assert.deepEqual((conn.updates[1]!.update as any).content, [
+    { type: 'content', content: { type: 'text', text: 'running' } }
+  ])
+  assert.deepEqual((conn.updates[1]!.update as any).rawOutput, { content: [{ type: 'text', text: 'running' }] })
+  assert.equal((conn.updates[1]!.update as any)._meta, undefined)
+
+  // Completion carries the full output as content + rawOutput; exit code 0 is not appended.
+  assert.equal(conn.updates[2]!.update.sessionUpdate, 'tool_call_update')
+  assert.equal((conn.updates[2]!.update as any).status, 'completed')
+  assert.deepEqual((conn.updates[2]!.update as any).content, [
+    { type: 'content', content: { type: 'text', text: 'done' } }
+  ])
+  assert.deepEqual((conn.updates[2]!.update as any).rawOutput, { content: [{ type: 'text', text: 'done' }] })
+  assert.equal((conn.updates[2]!.update as any)._meta, undefined)
 })
 
 test('PiAcpSession: emits tool locations from pi path args', async () => {
