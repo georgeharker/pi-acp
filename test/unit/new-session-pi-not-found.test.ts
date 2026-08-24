@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PiAcpAgent } from '../../src/acp/agent.js'
@@ -11,7 +11,8 @@ test('PiAcpAgent: newSession returns a helpful Internal error when pi is not ins
   const agentDir = mkdtempSync(join(tmpdir(), 'pi-acp-agentdir-'))
   process.env.PI_CODING_AGENT_DIR = agentDir
   // Point pi-acp's own settings at a non-existent binary so spawn fails deterministically.
-  writeFileSync(join(agentDir, 'pi-acp.json'), JSON.stringify({ piCommand: 'pi-does-not-exist-12345' }))
+  mkdirSync(join(agentDir, 'extensions'), { recursive: true })
+  writeFileSync(join(agentDir, 'extensions', 'pi-acp.json'), JSON.stringify({ piCommand: 'pi-does-not-exist-12345' }))
 
   try {
     const conn = new FakeAgentSideConnection()

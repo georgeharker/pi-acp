@@ -142,7 +142,7 @@ Point your ACP client to the built `dist/index.js`:
 
 ### Settings (`pi-acp.json`)
 
-pi-acp reads its own settings from `pi-acp.json` in the pi agent directory — i.e. `<PI_CODING_AGENT_DIR>/pi-acp.json` (default `~/.pi/agent/pi-acp.json`). This is a dedicated pi-acp file; it is **not** merged into pi's own `settings.json`. A default file is written on first run if one does not already exist, and an existing file is never overwritten.
+pi-acp reads its own settings from `pi-acp.json` in the pi agent's `extensions/` directory — i.e. `<PI_CODING_AGENT_DIR>/extensions/pi-acp.json` (default `~/.pi/agent/extensions/pi-acp.json`), alongside other extensions' settings. This is a dedicated pi-acp file; it is **not** merged into pi's own `settings.json`. A default file is written on first run if one does not already exist, and an existing file is never overwritten. For backward compatibility the pre-0.2.2 location — `<PI_CODING_AGENT_DIR>/pi-acp.json` (agent root) — is still read as a fallback when no file exists in `extensions/`.
 
 Options:
 
@@ -150,7 +150,7 @@ Options:
 - `rpcTimeoutMs` (number, default `120000`) — per-request timeout for pi RPC calls. Generous so legitimately slow commands (e.g. compaction) finish.
 - `debug` (boolean, default `false`) — emit adapter debug logging to stderr.
 - `piCommand` (string, optional) — override the pi executable name/path. Absent = platform default (`pi`, or `pi.cmd` on Windows).
-- `dataDir` (string, optional) — override pi-acp's own data directory. Absent = `~/.pi/pi-acp`. This controls where the session-map file and any future adapter-owned data is stored; it is separate from `PI_CODING_AGENT_DIR`, which rehomes pi's own agent directory (and hence `pi-acp.json`).
+- `dataDir` (string, optional) — override pi-acp's own data directory. Absent = `~/.pi/pi-acp`. This controls where the session-map file and any future adapter-owned data is stored; it is separate from `PI_CODING_AGENT_DIR`, which rehomes pi's own agent directory (and hence `extensions/pi-acp.json`).
 
 The default file written on first run contains:
 

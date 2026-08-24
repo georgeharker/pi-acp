@@ -9,3 +9,6 @@ dist
 
 /agentDocs
 .DS_Store
+
+# cribsheet code index
+.crib
