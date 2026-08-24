@@ -88,6 +88,8 @@ type SpawnParams = {
    * write into pi's own `<cwd>/.pi/` config namespace.
    */
   mcpConfigPath?: string
+  /** Per-request RPC timeout (ms). Falls back to {@link DEFAULT_RPC_TIMEOUT_MS} when unset. */
+  rpcTimeoutMs?: number
 }
 
 /**
@@ -122,11 +124,13 @@ export class PiRpcProcess {
   private readonly preludeLines: string[] = []
   private readonly rpcTimeoutMs: number
 
-  private constructor(child: ChildProcessWithoutNullStreams) {
+  private constructor(child: ChildProcessWithoutNullStreams, rpcTimeoutMs?: number) {
     this.child = child
 
-    const envTimeout = Number(process.env.PI_ACP_RPC_TIMEOUT_MS)
-    this.rpcTimeoutMs = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : DEFAULT_RPC_TIMEOUT_MS
+    this.rpcTimeoutMs =
+      typeof rpcTimeoutMs === 'number' && Number.isFinite(rpcTimeoutMs) && rpcTimeoutMs > 0
+        ? rpcTimeoutMs
+        : DEFAULT_RPC_TIMEOUT_MS
 
     const rl = readline.createInterface({ input: child.stdout })
     rl.on('line', line => {
@@ -277,7 +281,7 @@ export class PiRpcProcess {
       // leave stderr untouched; ACP clients may capture it.
     })
 
-    const proc = new PiRpcProcess(child)
+    const proc = new PiRpcProcess(child, params.rpcTimeoutMs)
 
     // Best-effort handshake.
     // Important: pi may emit a get_state response pointing at a sessionFile in a directory

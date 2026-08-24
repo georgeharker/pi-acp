@@ -50,6 +50,12 @@ import {
 import { promptToPiMessage } from './translate/prompt.js'
 import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slash-commands.js'
 import { getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
+import {
+  ensurePiAcpSettingsFile,
+  getEmbeddedContext,
+  getPiCommandOverride,
+  getRpcTimeoutMs
+} from './pi-acp-settings.js'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { writeMcpConfig, buildMcpNotice, cleanupStaleGeneratedConfig } from './mcp-config.js'
@@ -220,9 +226,10 @@ export class PiAcpAgent implements ACPAgent {
         proc = await PiRpcProcess.spawn({
           cwd,
           sessionPath: stored.sessionFile,
-          piCommand: process.env.PI_ACP_PI_COMMAND,
+          piCommand: getPiCommandOverride(),
           additionalDirectories: opts?.additionalDirectories,
-          mcpConfigPath: mcpWrite.handle?.path
+          mcpConfigPath: mcpWrite.handle?.path,
+          rpcTimeoutMs: getRpcTimeoutMs()
         })
       } catch (e: any) {
         if (e?.name === 'PiRpcSpawnError') {
@@ -262,6 +269,9 @@ export class PiAcpAgent implements ACPAgent {
     // Capture the full client capabilities so sessions can gate wire features (terminals, plan, fs).
     this.clientCapabilities = params.clientCapabilities
 
+    // Seed pi-acp's own settings file with defaults on first run (never overwrites an existing one).
+    ensurePiAcpSettingsFile()
+
     // We currently only support ACP protocol version 1.
     const supportedVersion = 1
     const requested = params.protocolVersion
@@ -286,7 +296,7 @@ export class PiAcpAgent implements ACPAgent {
         promptCapabilities: {
           image: true,
           audio: false,
-          embeddedContext: process.env.PI_ACP_ENABLE_EMBEDDED_CONTEXT === 'true'
+          embeddedContext: getEmbeddedContext()
         },
         sessionCapabilities: {
           // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
@@ -332,9 +342,10 @@ export class PiAcpAgent implements ACPAgent {
       mcpConfigCleanup: mcpWrite.handle?.cleanup,
       conn: this.conn,
       fileCommands,
-      piCommand: process.env.PI_ACP_PI_COMMAND,
+      piCommand: getPiCommandOverride(),
       additionalDirectories,
-      clientCapabilities: this.clientCapabilities
+      clientCapabilities: this.clientCapabilities,
+      rpcTimeoutMs: getRpcTimeoutMs()
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.

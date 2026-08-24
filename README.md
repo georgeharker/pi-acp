@@ -76,7 +76,7 @@ npm install -g @earendil-works/pi-coding-agent
 
 ### Add pi-acp to your ACP client, e.g. [Zed](https://zed.dev/docs/agents/external-agents/)
 
-#### Using ACP Registry in Zed or other clients that support it:
+#### Using ACP Registry in Zed or other clients that support it
 
 In Zed launch the registry with `zed: acp registry` command and select `pi ACP` adapter from the list. This will automatically add the agent server configuration to your `settings.json` and keep it up to date:
 
@@ -88,7 +88,7 @@ In Zed launch the registry with `zed: acp registry` command and select `pi ACP` 
   }
 ```
 
-#### Using with `npx` (no global install needed, always loads the latest version):
+#### Using with `npx` (no global install needed, always loads the latest version)
 
 Add the following to your Zed `settings.json`:
 
@@ -140,26 +140,26 @@ Point your ACP client to the built `dist/index.js`:
   }
 ```
 
-### Environment variables
+### Settings (`pi-acp.json`)
 
-- `PI_ACP_ENABLE_EMBEDDED_CONTEXT=true` advertises ACP `promptCapabilities.embeddedContext` support to the client.
-- Default: unset/any other value means `false`.
-- When disabled, compliant ACP clients should avoid sending embedded `resource` blocks. If they send them anyway, `pi-acp` still degrades gracefully by converting them into plain-text prompt context.
-- `PI_ACP_DATA_DIR` overrides the default location for pi-acp's own data directory (default: `~/.pi/pi-acp`). This controls where the session-map file and any future adapter-owned data is stored. Separate from `PI_CODING_AGENT_DIR`, which rehomes pi's own agent directory.
+pi-acp reads its own settings from `pi-acp.json` in the pi agent directory — i.e. `<PI_CODING_AGENT_DIR>/pi-acp.json` (default `~/.pi/agent/pi-acp.json`). This is a dedicated pi-acp file; it is **not** merged into pi's own `settings.json`. A default file is written on first run if one does not already exist, and an existing file is never overwritten.
 
-You can add the environment variable in the Zed settings with:
+Options:
+
+- `embeddedContext` (boolean, default `true`) — advertises ACP `promptCapabilities.embeddedContext` to the client. When `false`, compliant ACP clients should avoid sending embedded `resource` blocks; if they send them anyway, `pi-acp` still degrades gracefully by converting them into plain-text prompt context.
+- `rpcTimeoutMs` (number, default `120000`) — per-request timeout for pi RPC calls. Generous so legitimately slow commands (e.g. compaction) finish.
+- `debug` (boolean, default `false`) — emit adapter debug logging to stderr.
+- `piCommand` (string, optional) — override the pi executable name/path. Absent = platform default (`pi`, or `pi.cmd` on Windows).
+- `dataDir` (string, optional) — override pi-acp's own data directory. Absent = `~/.pi/pi-acp`. This controls where the session-map file and any future adapter-owned data is stored; it is separate from `PI_CODING_AGENT_DIR`, which rehomes pi's own agent directory (and hence `pi-acp.json`).
+
+The default file written on first run contains:
 
 ```json
-  "agent_servers": {
-    "pi": {
-      "type": "custom",
-      "command": "node",
-      "args": ["/path/to/pi-acp/dist/index.js"],
-      "env": {
-          "PI_ACP_ENABLE_EMBEDDED_CONTEXT": "true",
-      }
-    }
-  }
+{
+  "embeddedContext": true,
+  "rpcTimeoutMs": 120000,
+  "debug": false
+}
 ```
 
 ### Slash commands

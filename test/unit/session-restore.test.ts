@@ -25,6 +25,8 @@ class FakeSessions {
 }
 
 test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', async () => {
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR
+  process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'pi-acp-agentdir-'))
   const conn = new FakeAgentSideConnection()
   const promptCalls: Array<{ message: string; images: unknown[] }> = []
   const spawnCalls: any[] = []
@@ -81,9 +83,10 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
       {
         cwd: '/tmp/store-project',
         sessionPath: '/tmp/store-project/session.jsonl',
-        piCommand: process.env.PI_ACP_PI_COMMAND,
+        piCommand: undefined,
         additionalDirectories: undefined,
-        mcpConfigPath: undefined
+        mcpConfigPath: undefined,
+        rpcTimeoutMs: 120000
       }
     ])
     assert.deepEqual(promptCalls, [{ message: 'hello again', images: [] }])
@@ -96,6 +99,8 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
     ])
   } finally {
     PiRpcProcess.spawn = originalSpawn
+    if (prevAgentDir == null) delete process.env.PI_CODING_AGENT_DIR
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir
   }
 })
 
@@ -177,9 +182,10 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
       {
         cwd: '/tmp/fallback-project',
         sessionPath: sessionFile,
-        piCommand: process.env.PI_ACP_PI_COMMAND,
+        piCommand: undefined,
         additionalDirectories: undefined,
-        mcpConfigPath: undefined
+        mcpConfigPath: undefined,
+        rpcTimeoutMs: 120000
       }
     ])
     assert.deepEqual(setModelCalls, [{ provider: 'test', modelId: 'beta' }])

@@ -28,6 +28,7 @@ import {
   isBashTool
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
+import { getPiAcpDebug } from './pi-acp-settings.js'
 import {
   SUBAGENT_PLAN_CUSTOM_TYPE,
   SUBAGENT_RECORD_CUSTOM_TYPE,
@@ -52,6 +53,8 @@ type SessionCreateParams = {
   mcpConfigCleanup?: () => void
   /** Full ACP client capabilities from initialize, used to gate wire features (terminals, plan, fs). */
   clientCapabilities?: ClientCapabilities
+  /** Per-request pi RPC timeout (ms); falls back to the process default when unset. */
+  rpcTimeoutMs?: number
 }
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
@@ -226,7 +229,8 @@ export class SessionManager {
         cwd: params.cwd,
         piCommand: params.piCommand,
         additionalDirectories: params.additionalDirectories,
-        mcpConfigPath: params.mcpConfigPath
+        mcpConfigPath: params.mcpConfigPath,
+        rpcTimeoutMs: params.rpcTimeoutMs
       })
     } catch (e) {
       if (e instanceof PiRpcSpawnError) {
@@ -326,11 +330,6 @@ export class PiAcpSession {
   // Accumulated pi-subagents fleet (from `acp:subagents` custom entries), keyed by agent id.
   private subagentFleet = new Map<string, BridgeSubagent>()
 
-  // pi can emit multiple `turn_end` and `agent_end` events for a single user prompt
-  // when retry, compaction, or queued continuations run. The session-level prompt
-  // completes only when `agent_settled` is emitted.
-  private inAgentLoop = false
-
   // For ACP diff support: capture file contents before edit/write mutations,
   // then emit ToolCallContent {type:"diff"}. Compatible structured edit/write
   // events may need to be implemented in pi in the future.
@@ -377,7 +376,6 @@ export class PiAcpSession {
     const pending = this.pendingTurn
     const queued = this.turnQueue.splice(0, this.turnQueue.length)
     this.pendingTurn = null
-    this.inAgentLoop = false
     if (!pending && queued.length === 0) return
 
     void this.flushEmits().finally(() => {
@@ -582,7 +580,6 @@ export class PiAcpSession {
 
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
-    this.inAgentLoop = false
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
 
@@ -609,7 +606,6 @@ export class PiAcpSession {
         }
 
         this.pendingTurn = null
-        this.inAgentLoop = false
 
         // If the prompt failed, do not automatically proceed—pi may be unhealthy.
         // But we still clear the queueDepth metadata.
@@ -933,7 +929,7 @@ export class PiAcpSession {
       }
 
       case 'agent_start': {
-        this.inAgentLoop = true
+        // No adapter state to update; ACP turn completion is driven by `agent_settled`.
         break
       }
 
@@ -946,7 +942,6 @@ export class PiAcpSession {
       case 'agent_end': {
         // One low-level run ended. Pi may still retry, compact, or process a queued
         // continuation, so keep the ACP turn open until `agent_settled`.
-        this.inAgentLoop = false
         break
       }
 
@@ -957,7 +952,6 @@ export class PiAcpSession {
           const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
           this.pendingTurn?.resolve(reason)
           this.pendingTurn = null
-          this.inAgentLoop = false
 
           // Start next queued prompt, if any.
           const next = this.turnQueue.shift()
@@ -1055,7 +1049,7 @@ export class PiAcpSession {
     }
 
     if (changed) {
-      if (process.env.PI_ACP_DEBUG) {
+      if (getPiAcpDebug()) {
         const summary = Array.from(this.subagentFleet.values(), a => `${a.id.slice(0, 8)}=${a.status ?? '?'}`).join(
           ', '
         )

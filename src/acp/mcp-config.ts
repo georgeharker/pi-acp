@@ -28,7 +28,7 @@ export type McpTranslation = {
 
 /**
  * Policy consulted when generating `.pi/mcp.json`, loaded from
- * `<PI_ACP_DATA_DIR>/mcp-policy.json` (default `~/.pi/pi-acp/mcp-policy.json`).
+ * `<pi-acp dataDir>/mcp-policy.json` (default `~/.pi/pi-acp/mcp-policy.json`).
  *
  * Why: the ACP `McpServer` shape can't express bearer auth, and pi-acp writing a server (repointing
  * its URL) trips pi-mcp-adapter's URL-bound credential stripping → 401 on an otherwise-configured
