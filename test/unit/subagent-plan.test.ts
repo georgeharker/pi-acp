@@ -99,7 +99,7 @@ test('toPlanEntries: result/error/duration surface in entry _meta (truncated pre
   const meta1 = entries[1]._meta as { piAcp: { subagent: { error: string } } }
   assert.equal(meta1.piAcp.subagent.error, 'boom')
 
-  assert.equal(entries[2]._meta, undefined) // no result/error → no _meta
+  assert.deepEqual(entries[2]._meta, { piAcp: { section: 'agents' } }) // no result/error → section only
 })
 
 test('toPlanEntries: content formatting + failed annotation + accepts a Map iterator', () => {

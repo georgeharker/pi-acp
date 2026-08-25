@@ -38,6 +38,13 @@ import {
   toPlanEntries,
   type BridgeSubagent
 } from './subagent-plan.js'
+import {
+  PLAN_CUSTOM_TYPE,
+  applyPlanEntry,
+  newPlanState,
+  parsePlanEntry,
+  toPlanEntries as toCribPlanEntries
+} from './plan-bridge.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -329,6 +336,7 @@ export class PiAcpSession {
 
   // Accumulated pi-subagents fleet (from `acp:subagents` custom entries), keyed by agent id.
   private subagentFleet = new Map<string, BridgeSubagent>()
+  private planState = newPlanState()
 
   // For ACP diff support: capture file contents before edit/write mutations,
   // then emit ToolCallContent {type:"diff"}. Compatible structured edit/write
@@ -1019,10 +1027,12 @@ export class PiAcpSession {
   }
 
   /**
-   * Accumulate the pi-subagents fleet from custom entries forwarded over RPC as `entry_appended`,
-   * and emit an ACP `plan`. Two sources are merged by id:
-   *  - `acp:subagents` (our bundled extension): live lifecycle records, or a `{ clear: true }` reset.
-   *  - `subagents:record` (pi-subagents' own): the final status + result/error + timing.
+   * Accumulate plan + subagent state from custom entries forwarded over RPC as `entry_appended`,
+   * and emit a single combined ACP `plan`. Three sources feed it:
+   *  - `acp:subagents` (our bundled extension): live subagent lifecycle records, or `{ clear: true }`.
+   *  - `subagents:record` (pi-subagents' own): the final subagent status + result/error + timing.
+   *  - `acp:plan` (our bundled extension): cribsheet-style plan snapshots/updates (see plan-bridge.ts).
+   * The emitted plan lists the cribsheet plan first, then the live subagent fleet.
    */
   private handleSubagentEntry(entry: unknown): void {
     const e = entry as { type?: unknown; customType?: unknown; data?: unknown } | null
@@ -1046,16 +1056,23 @@ export class PiAcpSession {
       // Final record enriches the existing live entry (same monotonic + field-preserving merge).
       this.subagentFleet.set(rec.id, mergeSubagent(this.subagentFleet.get(rec.id), rec))
       changed = true
+    } else if (e.customType === PLAN_CUSTOM_TYPE) {
+      const op = parsePlanEntry(e.data)
+      if (!op) return
+      changed = applyPlanEntry(this.planState, op)
     }
 
     if (changed) {
       if (getPiAcpDebug()) {
-        const summary = Array.from(this.subagentFleet.values(), a => `${a.id.slice(0, 8)}=${a.status ?? '?'}`).join(
-          ', '
-        )
-        process.stderr.write(`[pi-acp] subagent entry (${String(e.customType)}) -> fleet: ${summary}\n`)
+        const fleet = Array.from(this.subagentFleet.values(), a => `${a.id.slice(0, 8)}=${a.status ?? '?'}`).join(', ')
+        const planCount = toCribPlanEntries(this.planState).length
+        process.stderr.write(`[pi-acp] entry (${String(e.customType)}) -> plan:${planCount} fleet:[${fleet}]\n`)
       }
-      this.emit({ sessionUpdate: 'plan', entries: toPlanEntries(this.subagentFleet.values()) })
+      // One ACP plan surfaces both sources: the cribsheet plan first, then the live subagent fleet.
+      this.emit({
+        sessionUpdate: 'plan',
+        entries: [...toCribPlanEntries(this.planState), ...toPlanEntries(this.subagentFleet.values())]
+      })
     }
   }
 

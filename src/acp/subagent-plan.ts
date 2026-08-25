@@ -182,13 +182,16 @@ function toPlanEntry(agent: BridgeSubagent): PlanEntry {
 
   const entry: PlanEntry = { content: content + suffix, priority: 'medium', status: planStatus }
 
-  // Carry the subagent's result/error/timing (from `subagents:record`) in `_meta` — a preview a
-  // client can render, without polluting the plan `content`.
+  // Tag the section (so a client can group the fleet apart from the cribsheet plan) and carry the
+  // subagent's result/error/timing (from `subagents:record`) as a preview — without polluting
+  // the plan `content`.
+  const piAcp: Record<string, unknown> = { section: 'agents' }
   const subagent: Record<string, unknown> = {}
   if (agent.result) subagent.result = preview(agent.result)
   if (agent.error) subagent.error = preview(agent.error)
   if (agent.durationMs != null) subagent.durationMs = agent.durationMs
-  if (Object.keys(subagent).length) entry._meta = { piAcp: { subagent } }
+  if (Object.keys(subagent).length) piAcp.subagent = subagent
+  entry._meta = { piAcp }
 
   return entry
 }

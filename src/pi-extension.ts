@@ -23,6 +23,7 @@
  */
 
 const CUSTOM_TYPE = 'acp:subagents'
+const PLAN_CUSTOM_TYPE = 'acp:plan'
 
 type BusHandler = (data: unknown) => void
 type HookHandler = (event: unknown, ctx: unknown) => void
@@ -50,10 +51,10 @@ export default function (pi: PiExtensionApi): void {
   // events like `steered` carry only an id).
   const agents = new Map<string, Agent>()
 
-  const append = (data: unknown): void => {
+  const append = (customType: string, data: unknown): void => {
     if (!active) return
     try {
-      pi.appendEntry(CUSTOM_TYPE, data)
+      pi.appendEntry(customType, data)
     } catch {
       // best effort; a dropped record self-heals on the next event
     }
@@ -73,7 +74,17 @@ export default function (pi: PiExtensionApi): void {
         status
       }
       agents.set(id, agent)
-      append(agent)
+      append(CUSTOM_TYPE, agent)
+    }
+
+  // Plan bus (e.g. pi-cribsheet): forward full snapshots and part-by-part updates over RPC. The
+  // in-process `pi.events` bus is not RPC-forwarded, so — exactly as with `subagents:*` above — we
+  // re-emit each as a persisted `acp:plan` custom entry, tagged with its operation.
+  const forwardPlan =
+    (op: 'snapshot' | 'update'): BusHandler =>
+    data => {
+      if (data == null || typeof data !== 'object') return
+      append(PLAN_CUSTOM_TYPE, { op, ...(data as Record<string, unknown>) })
     }
 
   // Activate only when pi is driven headless over RPC (any ACP adapter). session_start fires
@@ -90,9 +101,13 @@ export default function (pi: PiExtensionApi): void {
   pi.events.on('subagents:steered', record('steered'))
   pi.events.on('subagents:compacted', record('compacted'))
 
+  pi.events.on('plan:snapshot', forwardPlan('snapshot'))
+  pi.events.on('plan:update', forwardPlan('update'))
+
   // Reset the plan when the session ends so a stale fleet doesn't linger.
   pi.on('session_shutdown', () => {
     agents.clear()
-    append({ clear: true })
+    append(CUSTOM_TYPE, { clear: true })
+    append(PLAN_CUSTOM_TYPE, { op: 'clear' })
   })
 }
