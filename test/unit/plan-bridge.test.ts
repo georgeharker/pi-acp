@@ -63,7 +63,14 @@ test('parsePlanEntry: missing ns defaults to "default"', () => {
 
 test('applyPlanEntry: snapshot replaces the ns set', () => {
   const s = newPlanState()
-  applyPlanEntry(s, { op: 'snapshot', ns: 'c', items: [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }] })
+  applyPlanEntry(s, {
+    op: 'snapshot',
+    ns: 'c',
+    items: [
+      { id: 'a', title: 'A' },
+      { id: 'b', title: 'B' }
+    ]
+  })
   const changed = applyPlanEntry(s, { op: 'snapshot', ns: 'c', items: [{ id: 'b', title: 'B2' }] })
   assert.equal(changed, true)
   assert.deepEqual(
@@ -74,10 +81,27 @@ test('applyPlanEntry: snapshot replaces the ns set', () => {
 
 test('applyPlanEntry: update upserts and removes by id', () => {
   const s = newPlanState()
-  applyPlanEntry(s, { op: 'snapshot', ns: 'c', items: [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }] })
-  applyPlanEntry(s, { op: 'update', ns: 'c', upsert: [{ id: 'a', title: 'A2' }, { id: 'z', title: 'Z' }], remove: ['b'] })
+  applyPlanEntry(s, {
+    op: 'snapshot',
+    ns: 'c',
+    items: [
+      { id: 'a', title: 'A' },
+      { id: 'b', title: 'B' }
+    ]
+  })
+  applyPlanEntry(s, {
+    op: 'update',
+    ns: 'c',
+    upsert: [
+      { id: 'a', title: 'A2' },
+      { id: 'z', title: 'Z' }
+    ],
+    remove: ['b']
+  })
   assert.deepEqual(
-    toPlanEntries(s).map(e => e.content).sort(),
+    toPlanEntries(s)
+      .map(e => e.content)
+      .sort(),
     ['A2', 'Z']
   )
 })
